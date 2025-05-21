@@ -1,0 +1,10 @@
+# Dossier de l'environnement virtuel Python
+venv/
+
+# Fichier .env pour les secrets (si tu l'utilises plus tard)
+.env
+
+# Dossiers de cache Python
+__pycache__/
+*.pyc
+*.pyo
