@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KOM Hunters - Carte Interactive</title>
+    <style>
+        html, body {
+            height: 100%; 
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            background-color: #f4f4f4; /* Couleur de fond pour la page entière */
+        }
+        .header-text {
+            padding: 15px;
+            background-color: #2d3748; /* Tailwind gray-800 */
+            color: #e2e8f0; /* Tailwind gray-300 */
+            text-align: center;
+            border-bottom: 1px solid #4a5568; /* Tailwind gray-700 */
+            flex-shrink: 0; /* Empêche le header de rétrécir */
+        }
+        .header-text h3 {
+            margin: 0 0 5px 0;
+            font-size: 1.5em;
+        }
+        .header-text p {
+            margin: 0;
+            font-size: 0.9em;
+        }
+        #map_div_wrapper { 
+            width: 100%; 
+            overflow: hidden; 
+            flex-grow: 1; /* Prend l'espace vertical restant */
+            position: relative; 
+        }
+        /* Folium injecte un div avec la classe .folium-map et un ID unique.
+           _repr_html_() devrait gérer son propre dimensionnement pour remplir son conteneur.
+           Si la carte ne remplit pas map_div_wrapper, on peut ajouter :
+           .folium-map { width: 100% !important; height: 100% !important; }
+        */
+        #status-message-container {
+            padding: 10px;
+            text-align: center;
+            background-color: #1a202c; /* Tailwind gray-900 */
+            color: #cbd5e0; /* Tailwind gray-400 */
+            font-size: 0.85em;
+            border-top: 1px solid #4a5568; /* Tailwind gray-700 */
+            flex-shrink: 0; /* Empêche ce div de rétrécir */
+        }
+    </style>
+    {{ map_header_safe | safe }}
+</head>
+<body>
+    <div class="header-text">
+        <h3>KOM Hunters</h3>
+        <p>Cliquez sur la carte pour choisir un point et découvrir les segments avec vent favorable aux alentours.</p>
+    </div>
+    
+    <div id="map_div_wrapper">
+        {{ map_body_safe | safe }}
+    </div>
+    
+    <div id="status-message-container">
+        <p id="status-message">Prêt à chasser les KOMs ! Sélectionnez un point sur la carte.</p>
+        <div id="segment-results">
+            </div>
+    </div>
