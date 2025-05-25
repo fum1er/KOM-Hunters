@@ -74,6 +74,10 @@ current_refresh_token = None
 token_expires_at = None
 new_token_info_global = "Cliquez sur 'Se connecter avec Strava' pour commencer."
 
+# Variables globales pour la sécurité IP
+authenticated_ip = None
+token_creation_time = None
+
 # Configuration pour l'analyse d'activités
 ACTIVITIES_PER_LOAD = 10
 CYCLING_ACTIVITY_TYPES = ['Ride', 'VirtualRide', 'EBikeRide', 'Gravel', 'MountainBikeRide']
@@ -465,6 +469,71 @@ def geocode_address_directly(address_str):
     except Exception as e:
         return None, f"Erreur de géocodage: {e}", address_str
 
+# --- Fonctions de sécurité IP ---
+def get_client_ip():
+    """Récupère l'adresse IP du client"""
+    try:
+        # En production sur Render, l'IP est dans les headers X-Forwarded-For
+        if os.getenv('RENDER'):
+            # Essayer d'abord X-Forwarded-For (proxy/load balancer)
+            forwarded_for = os.environ.get('HTTP_X_FORWARDED_FOR')
+            if forwarded_for:
+                # Prendre la première IP de la liste (IP originale du client)
+                return forwarded_for.split(',')[0].strip()
+            
+            # Essayer X-Real-IP
+            real_ip = os.environ.get('HTTP_X_REAL_IP')
+            if real_ip:
+                return real_ip.strip()
+        
+        # En développement local, utiliser une IP fictive
+        return '127.0.0.1'
+    except Exception as e:
+        print(f"❌ Erreur lors de la récupération de l'IP: {e}")
+        return '127.0.0.1'
+
+def is_ip_authorized(current_ip):
+    """Vérifie si l'IP actuelle est autorisée à accéder aux données Strava"""
+    global authenticated_ip, current_strava_access_token, token_creation_time
+    
+    # Si aucun token n'est présent, pas de restriction
+    if not current_strava_access_token:
+        return True, "Aucun token présent"
+    
+    # Si aucune IP n'est enregistrée, autoriser et enregistrer
+    if not authenticated_ip:
+        authenticated_ip = current_ip
+        token_creation_time = time.time()
+        print(f"🔒 IP autorisée enregistrée: {authenticated_ip}")
+        return True, f"IP {current_ip} enregistrée comme autorisée"
+    
+    # Vérifier si l'IP correspond
+    if current_ip == authenticated_ip:
+        return True, f"IP {current_ip} autorisée"
+    else:
+        return False, f"IP non autorisée: {current_ip} (attendue: {authenticated_ip})"
+
+def invalidate_token_for_security():
+    """Invalide le token et réinitialise les variables de sécurité"""
+    global current_strava_access_token, current_refresh_token, token_expires_at
+    global authenticated_ip, token_creation_time, new_token_info_global
+    
+    print(f"🚨 SÉCURITÉ: Invalidation du token pour changement d'IP")
+    
+    # Réinitialiser toutes les variables d'authentification
+    current_strava_access_token = None
+    current_refresh_token = None
+    token_expires_at = None
+    authenticated_ip = None
+    token_creation_time = None
+    
+    new_token_info_global = (
+        "🚨 SÉCURITÉ: Token invalidé pour changement d'IP\n"
+        "Une adresse IP différente a tenté d'accéder à vos données Strava.\n"
+        "Par sécurité, votre session a été fermée.\n"
+        "Veuillez vous reconnecter pour continuer."
+    )
+
 # CSS intégré avec tes styles originaux
 app.index_string = '''
 <!DOCTYPE html>
@@ -821,7 +890,15 @@ def display_page_content(pathname, search_query_params):
                         if current_strava_access_token:
                             current_refresh_token = refresh_token
                             token_expires_at = expires_at
+                            
+                            # Enregistrer l'IP qui a effectué l'authentification
+                            client_ip = get_client_ip()
+                            global authenticated_ip, token_creation_time
+                            authenticated_ip = client_ip
+                            token_creation_time = time.time()
+                            
                             print(f"✅ Nouveau Strava Access Token stocké en mémoire: ...{current_strava_access_token[-6:]}")
+                            print(f"🔒 IP d'authentification enregistrée: {authenticated_ip}")
                         
                         new_token_info_global = (
                             f"🎉 CONNEXION RÉUSSIE !\n"
