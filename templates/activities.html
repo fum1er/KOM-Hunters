@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>KOM Hunters - Analyse d'Activités</title>
+    <style>
+        /* Styles pour les activités */
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            background-color: #f7fafc;
+        }
+        
+        .activities-header {
+            background-color: #1a202c;
+            color: white;
+            padding: 1rem;
+            text-align: center;
+            position: relative;
+        }
+        
+        .activities-title {
+            margin: 0 0 10px 0;
+            font-size: 1.8rem;
+        }
+        
+        .navigation-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin-bottom: 15px;
+        }
+        
+        .nav-button {
+            padding: 10px 15px;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+        }
+        
+        .nav-button-segments {
+            background-color: #3182CE;
+        }
+        
+        .nav-button-activities {
+            background-color: #38A169;
+        }
+        
+        .activities-container {
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .activities-card {
+            background-color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        
+        .activities-card-title {
+            margin-bottom: 15px;
+            color: #2d3748;
+        }
+        
+        .activities-controls {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .load-button {
+            padding: 10px 15px;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        
+        .load-button-primary {
+            background-color: #3182CE;
+        }
+        
+        .load-button-secondary {
+            background-color: #4A5568;
+        }
+        
+        .load-status {
+            color: #666;
+        }
+        
+        .dropdown-container {
+            margin-bottom: 15px;
+        }
+        
+        .parameters-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+        
+        
+        
+        .parameter-label {
+            font-weight: bold;
+            margin-bottom: 5px;
+            display: block;
+        }
+        
+        .parameter-input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #d1d5db;
+            border-radius: 5px;
+            box-sizing: border-box;
+        }
+        
+        .analyze-button {
+            padding: 12px 20px;
+            background-color: #38A169;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+        
+        .analyze-button:disabled {
+            background-color: #A0AEC0;
+            cursor: not-allowed;
+        }
+        
+        .analysis-container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            min-height: 200px;
+        }
+    </style>
+</head>
+<body>
+    <div class="activities-header">
+        <h1 class="activities-title">🏆 KOM Hunters - Analyse d'Activités</h1>
+        <div class="navigation-buttons">
+            <a href="/" class="nav-button nav-button-segments">🔍 Recherche de Segments</a>
+            <a href="/activities" class="nav-button nav-button-activities">📊 Analyse d'Activités</a>
+        </div>
+    </div>
+    
+    <div class="activities-container">
+        <div class="activities-card">
+            <h3 class="activities-card-title">🚴 Sélectionnez une activité à analyser</h3>
+            
+            <div class="activities-controls">
+                <button id="load-activities-button" class="load-button load-button-primary">
+                    📥 Charger mes 10 dernières sorties vélo
+                </button>
+                <button id="load-more-activities-button" class="load-button load-button-secondary" disabled>
+                    📥 Charger 10 de plus
+                </button>
+                <div id="activities-load-status" class="load-status"></div>
+            </div>
+            
+            <div class="dropdown-container">
+                <select id="activities-dropdown" disabled>
+                    <option value="">Sélectionnez une activité...</option>
+                </select>
+            </div>
+            
+            <div class="parameters-grid">
+                <div class="parameter-group">
+                    <label class="parameter-label">💓 FC Max (bpm):</label>
+                    <input id="fc-max-input" type="number" value="190" min="120" max="220" class="parameter-input">
+                </div>
+                <div class="parameter-group">
+                    <label class="parameter-label">⚡ FTP (watts):</label>
+                    <input id="ftp-input" type="number" value="250" min="100" max="500" class="parameter-input">
+                </div>
+                <div class="parameter-group">
+                    <label class="parameter-label">⚖️ Poids (kg):</label>
+                    <input id="weight-input" type="number" value="70" min="40" max="150" class="parameter-input">
+                </div>
+            </div>
+            
+            <button id="analyze-activity-button" class="analyze-button" disabled>
+                🔍 Analyser cette activité
+            </button>
+        </div>
+        
+        <div id="loading-analysis" class="analysis-container">
+            <div id="activity-analysis-container">
+                Sélectionnez une activité à analyser
+            </div>
+        </div>
+    </div>
+</body>
+</html>

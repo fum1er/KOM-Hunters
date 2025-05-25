@@ -1,10 +1,19 @@
-# Dossier de l'environnement virtuel Python
-venv/
-
-# Fichier .env pour les secrets (si tu l'utilises plus tard)
 .env
-
-# Dossiers de cache Python
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+strava_activity_summaries.json
+app.py
+app_dash_old.py
+app_dash_old_v2.py
+app_dash_old_v3.py
+app_dash_old_v4.py
+app_dash_old_v5.py
+app_dash_old_v6.py
+strava_analyzer_old.py
+test_strava_api.py

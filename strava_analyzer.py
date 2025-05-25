@@ -14,6 +14,12 @@ from langchain_core.output_parsers import StrOutputParser
 # Constantes du module
 BASE_STRAVA_URL = 'https://www.strava.com/api/v3'
 
+# CONSTANTES OPTIMISEES POUR PLUS DE SEGMENTS
+MAX_SEGMENTS_PER_API_CALL = 10  # Limite réelle de l'API Strava
+OVERLAP_FACTOR_OPTIMIZED = 0.4  # 40% de chevauchement pour capturer plus de segments
+MIN_ZONE_RADIUS_KM = 5.0  # Zones plus petites pour plus de précision
+MAX_ZONES_PER_SEARCH = 25  # Augmenter le nombre max de zones
+
 # --- Fonctions Utilitaires et de Calcul de Zones ---
 def _make_strava_api_request(endpoint, access_token, params=None, method='GET', payload=None):
     """
@@ -157,7 +163,7 @@ def calculate_power_zones(user_ftp):
         "Z7 Neuromusculaire (>150% FTP)": (round(user_ftp * 1.51), float('inf'))
     }
 
-# --- FONCTIONS POUR LE VENT (RÉINTÉGRÉES ET CORRIGÉES) ---
+# --- FONCTIONS POUR LE VENT CORRIGEES ET OPTIMISEES ---
 def get_wind_data(latitude, longitude, weather_api_key, timestamp_utc=None):
     """ Récupère les données de vent. Nécessite une clé API météo. """
     if not weather_api_key: 
@@ -182,7 +188,6 @@ def get_wind_data(latitude, longitude, weather_api_key, timestamp_utc=None):
                 print("  (strava_analyzer) Données de vitesse ou direction du vent manquantes dans la réponse.")
                 return None
         print("  (strava_analyzer) Clé 'wind' non trouvée dans la réponse d'OpenWeatherMap.")
-        # print(f"  (strava_analyzer) Réponse complète: {weather_data}") # Pour débogage
         return None
     except requests.exceptions.HTTPError as http_err:
         print(f"  (strava_analyzer) Erreur HTTP avec OpenWeatherMap: {http_err}")
@@ -191,39 +196,434 @@ def get_wind_data(latitude, longitude, weather_api_key, timestamp_utc=None):
         print(f"  (strava_analyzer) Erreur avec OpenWeatherMap: {e}")
     return None
 
-def get_wind_effect_on_leg(leg_bearing_deg, wind_speed_mps, wind_direction_deg):
-    """ Calcule l'effet du vent sur un tronçon. """
+def get_wind_effect_on_leg_optimized(leg_bearing_deg, wind_speed_mps, wind_direction_deg):
+    """ 
+    FORMULE CORRIGEE: Calcule l'effet du vent sur un tronçon avec la formule aviation correcte.
+    
+    Args:
+        leg_bearing_deg: Direction du segment (0-360°)
+        wind_speed_mps: Vitesse du vent en m/s
+        wind_direction_deg: Direction D'OÙ vient le vent (0-360°)
+    
+    Returns:
+        dict: {
+            'type': str - Type de vent (Vent de Dos/Face/Travers)
+            'effective_speed_mps': float - Composante du vent (+ = dos, - = face)
+            'angle_difference': float - Différence d'angle pour debug
+        }
+    """
     if wind_speed_mps is None or wind_direction_deg is None:
-        print("(strava_analyzer) Données de vent (vitesse ou direction) manquantes pour calculer l'effet.")
-        return {'type': 'inconnu (données vent manquantes)', 'effective_speed_mps': 0}
+        return {'type': 'inconnu (données vent manquantes)', 'effective_speed_mps': 0, 'angle_difference': 0}
 
+    # Convertir en radians
     leg_bearing_rad = math.radians(leg_bearing_deg)
-    wind_from_rad = math.radians(wind_direction_deg) # Direction D'OÙ vient le vent
+    wind_from_rad = math.radians(wind_direction_deg)
     
-    # angle_diff_rad est l'angle entre la direction du segment et la direction D'OÙ vient le vent.
-    # Un angle de 0° signifie vent de face.
-    # Un angle de 180° (ou -180°) signifie vent de dos.
+    # Calculer l'angle entre la direction du segment et la direction D'OÙ vient le vent
     angle_diff_rad = leg_bearing_rad - wind_from_rad
-    # Normaliser l'angle entre -pi et pi (-180 et 180 degrés)
-    angle_diff_rad = (angle_diff_rad + math.pi) % (2 * math.pi) - math.pi 
     
-    # head_tailwind_component: Négatif si vent de face, Positif si vent de dos
-    # C'est la projection du vecteur vent sur l'axe du segment.
-    # Si le vent vient de la même direction que le cap du segment (angle_diff = 0), cos(0)=1, effet = -vitesse_vent (vent de face).
-    # Si le vent vient de la direction opposée (angle_diff = pi), cos(pi)=-1, effet = +vitesse_vent (vent de dos).
-    head_tailwind_component = -wind_speed_mps * math.cos(angle_diff_rad) 
+    # Normaliser l'angle entre -π et π (-180° et 180°)
+    angle_diff_rad = (angle_diff_rad + math.pi) % (2 * math.pi) - math.pi
+    angle_diff_deg = math.degrees(angle_diff_rad)
     
-    angle_diff_deg_normalized = math.degrees(angle_diff_rad) 
+    # FORMULE CORRECTE: Composante parallèle (vent de face/dos)
+    # cos(0°) = 1 (vent de face complet), cos(180°) = -1 (vent de dos complet)
+    tailwind_component = -wind_speed_mps * math.cos(angle_diff_rad)
+    
+    # Classification OPTIMISEE avec seuils plus larges
     wind_type = "inconnu"
-    # Seuil plus strict pour vent de face/dos
-    if -30 <= angle_diff_deg_normalized <= 30: wind_type = "Vent de Face"
-    elif abs(angle_diff_deg_normalized) >= 150 : wind_type = "Vent de Dos" # entre 150-180 et -150 - -180
-    elif 30 < angle_diff_deg_normalized < 150: wind_type = "Vent de Travers (Gauche)" # Vent vient de la droite du segment
-    elif -150 < angle_diff_deg_normalized < -30: wind_type = "Vent de Travers (Droite)" # Vent vient de la gauche du segment
-        
-    return {'type': wind_type, 'effective_speed_mps': round(head_tailwind_component, 2)}
-# --- FIN DES FONCTIONS POUR LE VENT ---
+    abs_angle = abs(angle_diff_deg)
+    
+    if abs_angle <= 45:  # 0° à 45° = vent de face (élargi)
+        wind_type = "Vent de Face"
+    elif abs_angle >= 135:  # 135° à 180° = vent de dos (élargi)
+        wind_type = "Vent de Dos"
+    elif 45 < abs_angle < 135:  # Entre 45° et 135° = vent de travers
+        if angle_diff_deg > 0:
+            wind_type = "Vent de Travers (Gauche)"
+        else:
+            wind_type = "Vent de Travers (Droite)"
+    
+    return {
+        'type': wind_type, 
+        'effective_speed_mps': round(tailwind_component, 3),
+        'angle_difference': round(angle_diff_deg, 1)
+    }
 
+# --- FONCTIONS POUR LA RECHERCHE SUPER OPTIMISEE ---
+def generate_dense_search_grid(center_lat, center_lon, total_radius_km, min_zone_radius_km=MIN_ZONE_RADIUS_KM):
+    """
+    Génère une grille dense de zones de recherche pour maximiser la couverture.
+    
+    Args:
+        center_lat (float): Latitude du centre principal
+        center_lon (float): Longitude du centre principal  
+        total_radius_km (float): Rayon total à couvrir
+        min_zone_radius_km (float): Rayon minimum de chaque zone
+    
+    Returns:
+        list: Liste de tuples (lat, lon, radius, name) pour chaque zone
+    """
+    print(f"\n--- GENERATION GRILLE DENSE DE RECHERCHE ---")
+    print(f"Zone principale: ({center_lat:.4f}, {center_lon:.4f}) - Rayon total: {total_radius_km}km")
+    print(f"Zones individuelles: Rayon {min_zone_radius_km}km")
+    
+    zones = []
+    zone_count = 0
+    
+    # Zone centrale - toujours incluse
+    zones.append((center_lat, center_lon, min_zone_radius_km, "Centre"))
+    zone_count += 1
+    
+    # Calculer le nombre d'anneaux nécessaires
+    max_rings = max(1, int(total_radius_km / (min_zone_radius_km * 0.8)))  # 0.8 pour plus de chevauchement
+    
+    # Générer des anneaux concentriques
+    for ring in range(1, max_rings + 1):
+        ring_radius = ring * min_zone_radius_km * 0.7  # Distance entre anneaux réduite
+        
+        # Si on dépasse le rayon total, stop
+        if ring_radius + min_zone_radius_km > total_radius_km:
+            break
+            
+        # Nombre de zones sur ce ring (proportionnel à la circonférence)
+        zones_in_ring = max(6, int(2 * math.pi * ring_radius / (min_zone_radius_km * 0.6)))
+        
+        # Limiter le nombre total de zones
+        if zone_count + zones_in_ring > MAX_ZONES_PER_SEARCH:
+            zones_in_ring = MAX_ZONES_PER_SEARCH - zone_count
+            if zones_in_ring <= 0:
+                break
+        
+        # Générer les zones uniformément réparties sur le ring
+        for i in range(zones_in_ring):
+            angle = (2 * math.pi * i) / zones_in_ring
+            
+            # Calculer les coordonnées de la nouvelle zone
+            # Conversion en coordonnées géographiques
+            lat_offset = (ring_radius * math.cos(angle)) / 111.32  # 1° lat ≈ 111.32 km
+            lon_offset = (ring_radius * math.sin(angle)) / (111.32 * math.cos(math.radians(center_lat)))
+            
+            new_lat = center_lat + lat_offset
+            new_lon = center_lon + lon_offset
+            
+            zone_name = f"Ring{ring}-{i+1}"
+            zones.append((new_lat, new_lon, min_zone_radius_km, zone_name))
+            zone_count += 1
+            
+            if zone_count >= MAX_ZONES_PER_SEARCH:
+                break
+        
+        if zone_count >= MAX_ZONES_PER_SEARCH:
+            break
+    
+    print(f"Grille générée: {len(zones)} zones")
+    print(f"Couverture estimée: {len(zones) * min_zone_radius_km * 2:.1f}km de diamètre effectif")
+    
+    # Debug: afficher quelques zones
+    for i, (lat, lon, radius, name) in enumerate(zones[:10]):
+        print(f"  Zone {i+1}: {name} - ({lat:.4f}, {lon:.4f}) - Rayon: {radius}km")
+    if len(zones) > 10:
+        print(f"  ... et {len(zones) - 10} autres zones")
+    
+    return zones
+
+def get_bounding_box_optimized(latitude, longitude, radius_km):
+    """Calcule une bounding box légèrement plus large pour capturer plus de segments"""
+    lat_radians = math.radians(latitude) 
+    # Ajouter 10% de marge pour capturer les segments aux bordures
+    effective_radius = radius_km * 1.1
+    delta_lat = effective_radius / 111.32
+    delta_lon = effective_radius / (111.32 * math.cos(lat_radians))
+    return [latitude - delta_lat, longitude - delta_lon, latitude + delta_lat, longitude + delta_lon]
+
+def search_segments_in_zone_optimized(zone_lat, zone_lon, zone_radius, strava_token, zone_name="Zone"):
+    """
+    Version optimisée pour rechercher plus de segments dans une zone.
+    """
+    print(f"\n  --- RECHERCHE OPTIMISEE: {zone_name} ---")
+    print(f"  Coordonnees: ({zone_lat:.4f}, {zone_lon:.4f}) - Rayon: {zone_radius}km")
+    
+    try:
+        bounds_list = get_bounding_box_optimized(zone_lat, zone_lon, zone_radius)
+        bounds_str = ",".join(map(str, bounds_list))
+        
+        # Paramètres optimisés pour l'API
+        explore_params = {
+            'bounds': bounds_str, 
+            'activity_type': 'riding'
+            # Note: L'API ne supporte pas per_page > 10 pour segments/explore
+        }
+        
+        explore_result = _make_strava_api_request("segments/explore", strava_token, params=explore_params)
+        
+        if not explore_result:
+            print(f"  Aucune reponse de Strava pour {zone_name}")
+            return [], f"Pas de réponse Strava pour {zone_name}"
+            
+        if explore_result.get("message") == "Authorization Error":
+            print(f"  Erreur d'autorisation pour {zone_name}")
+            return [], "Erreur d'autorisation Strava"
+            
+        if isinstance(explore_result, dict) and "message" in explore_result:
+            print(f"  Erreur API Strava pour {zone_name}: {explore_result.get('message')}")
+            return [], f"Erreur API: {explore_result.get('message')}"
+
+        if 'segments' not in explore_result:
+            print(f"  Format inattendu pour {zone_name}")
+            return [], "Format de réponse inattendu"
+        
+        segments = explore_result['segments']
+        print(f"  {len(segments)} segments trouves dans {zone_name} (max: {MAX_SEGMENTS_PER_API_CALL})")
+        
+        # Ajouter l'info de zone à chaque segment
+        for segment in segments:
+            segment['search_zone'] = zone_name
+            
+        return segments, None
+        
+    except Exception as e:
+        print(f"  Erreur lors de la recherche dans {zone_name}: {e}")
+        return [], f"Erreur dans {zone_name}: {e}"
+
+def deduplicate_segments_advanced(all_segments):
+    """
+    Version avancée de déduplication avec statistiques détaillées.
+    """
+    print(f"\n--- DEDUPLICATION AVANCEE DES SEGMENTS ---")
+    print(f"Segments avant deduplication: {len(all_segments)}")
+    
+    seen_ids = set()
+    unique_segments = []
+    duplicate_count = 0
+    zones_stats = {}
+    
+    for segment in all_segments:
+        segment_id = segment.get('id')
+        zone = segment.get('search_zone', 'Zone inconnue')
+        
+        # Statistiques par zone
+        if zone not in zones_stats:
+            zones_stats[zone] = {'total': 0, 'uniques': 0, 'doublons': 0}
+        zones_stats[zone]['total'] += 1
+        
+        if segment_id not in seen_ids:
+            seen_ids.add(segment_id)
+            unique_segments.append(segment)
+            zones_stats[zone]['uniques'] += 1
+        else:
+            duplicate_count += 1
+            zones_stats[zone]['doublons'] += 1
+            
+    print(f"Segments dupliques supprimes: {duplicate_count}")
+    print(f"Segments uniques: {len(unique_segments)}")
+    
+    # Afficher stats par zone
+    print(f"Statistiques par zone:")
+    for zone, stats in zones_stats.items():
+        print(f"  {zone}: {stats['uniques']} uniques / {stats['total']} total ({stats['doublons']} doublons)")
+    
+    return unique_segments
+
+def find_tailwind_segments_live(lat, lon, radius_km, strava_token_to_use, weather_key, min_tailwind_effect_mps):
+    """
+    VERSION SUPER OPTIMISEE pour trouver le maximum de segments avec vent de dos.
+    
+    Améliorations:
+    1. Grille dense de recherche au lieu de zones cardinales
+    2. Calcul de vent de dos corrigé avec formule aviation
+    3. Seuils plus permissifs pour détecter plus de segments
+    4. Meilleure couverture géographique
+    """
+    print(f"\n=== DEBUT RECHERCHE SUPER OPTIMISEE ===")
+    print(f"Coordonnees centrales: {lat:.4f}, {lon:.4f}")
+    print(f"Rayon total: {radius_km}km")
+    print(f"Seuil vent de dos min: {min_tailwind_effect_mps} m/s")
+    print(f"Max zones: {MAX_ZONES_PER_SEARCH}, Segments/zone: {MAX_SEGMENTS_PER_API_CALL}")
+    
+    if not strava_token_to_use: 
+        return [], "Token Strava manquant. Veuillez vous connecter."
+
+    if not weather_key:
+        return [], "Clé API Météo manquante."
+
+    # ETAPE 1: Récupération météo
+    try:
+        print(f"\n--- ETAPE 1: Recuperation meteo ---")
+        wind_data = get_wind_data(lat, lon, weather_key)
+        
+        if not wind_data or wind_data.get('speed') is None or wind_data.get('deg') is None:
+            return [], "Données météorologiques insuffisantes."
+            
+        wind_speed = wind_data['speed']
+        wind_direction = wind_data['deg']
+        print(f"Vent: {wind_speed:.2f} m/s depuis {wind_direction}°")
+        
+    except Exception as e:
+        return [], f"Erreur météorologique: {e}"
+
+    # ETAPE 2: Génération grille de recherche dense
+    try:
+        print(f"\n--- ETAPE 2: Generation grille dense ---")
+        search_zones = generate_dense_search_grid(lat, lon, radius_km, MIN_ZONE_RADIUS_KM)
+        print(f"Grille générée: {len(search_zones)} zones de recherche")
+        
+    except Exception as e:
+        return [], f"Erreur génération grille: {e}"
+
+    # ETAPE 3: Recherche parallèle dans toutes les zones
+    try:
+        print(f"\n--- ETAPE 3: Recherche dans {len(search_zones)} zones ---")
+        all_segments = []
+        successful_zones = 0
+        api_calls_made = 0
+        
+        for i, (zone_lat, zone_lon, zone_radius, zone_name) in enumerate(search_zones):
+            if i % 5 == 0:  # Log de progression
+                print(f"\nProgression: {i+1}/{len(search_zones)} zones traitées")
+            
+            segments, error = search_segments_in_zone_optimized(
+                zone_lat, zone_lon, zone_radius, strava_token_to_use, zone_name
+            )
+            api_calls_made += 1
+            
+            if error:
+                print(f"  Erreur {zone_name}: {error}")
+                continue
+            else:
+                successful_zones += 1
+                all_segments.extend(segments)
+                print(f"  {len(segments)} segments ajoutés depuis {zone_name}")
+            
+            # Pause pour respecter les limites de l'API Strava (100 req/15min)
+            time.sleep(0.1)
+        
+        print(f"\nResultats bruts:")
+        print(f"  Zones réussies: {successful_zones}/{len(search_zones)}")
+        print(f"  API calls: {api_calls_made}")
+        print(f"  Segments bruts: {len(all_segments)}")
+        
+    except Exception as e:
+        return [], f"Erreur recherche multi-zones: {e}"
+
+    # ETAPE 4: Déduplication avancée
+    try:
+        print(f"\n--- ETAPE 4: Deduplication avancee ---")
+        if not all_segments:
+            return [], f"Aucun segment trouvé dans les {len(search_zones)} zones."
+        
+        unique_segments = deduplicate_segments_advanced(all_segments)
+        print(f"Segments uniques après déduplication: {len(unique_segments)}")
+        
+    except Exception as e:
+        return [], f"Erreur déduplication: {e}"
+
+    # ETAPE 5: Analyse du vent optimisée
+    try:
+        print(f"\n--- ETAPE 5: Analyse vent optimisee pour {len(unique_segments)} segments ---")
+        tailwind_segments = []
+        
+        # Compteurs pour statistiques
+        segments_processed = 0
+        segments_with_coords = 0
+        wind_stats = {
+            'Vent de Dos': 0,
+            'Vent de Face': 0,
+            'Vent de Travers (Gauche)': 0,
+            'Vent de Travers (Droite)': 0,
+            'inconnu': 0
+        }
+        
+        for i, segment in enumerate(unique_segments):
+            segments_processed += 1
+            segment_id = segment.get('id')
+            segment_name = segment.get('name', f'Segment {segment_id}')
+            encoded_polyline = segment.get('points')
+            search_zone = segment.get('search_zone', 'Zone inconnue')
+            
+            if i % 20 == 0:  # Log progression
+                print(f"  Analyse: {i+1}/{len(unique_segments)} segments")
+            
+            if not encoded_polyline:
+                continue
+
+            try:
+                coordinates = decode_strava_polyline(encoded_polyline)
+                if not coordinates or len(coordinates) < 2:
+                    continue
+                    
+                segments_with_coords += 1
+                
+                # Calculer le cap du segment
+                segment_bearing = calculate_bearing(
+                    coordinates[0][0], coordinates[0][1], 
+                    coordinates[-1][0], coordinates[-1][1]
+                )
+                
+                # NOUVEAU: Calcul de vent optimisé
+                wind_effect = get_wind_effect_on_leg_optimized(
+                    segment_bearing, wind_speed, wind_direction
+                )
+                
+                # Statistiques sur les types de vent
+                wind_type = wind_effect['type']
+                if wind_type in wind_stats:
+                    wind_stats[wind_type] += 1
+                else:
+                    wind_stats['inconnu'] += 1
+                
+                # CRITERE OPTIMISE: Accepter plus de segments
+                effective_wind = wind_effect['effective_speed_mps']
+                is_favorable = (
+                    wind_type == "Vent de Dos" and effective_wind >= min_tailwind_effect_mps
+                ) or (
+                    # NOUVEAU: Accepter aussi les vents de travers avec composante favorable
+                    wind_type.startswith("Vent de Travers") and effective_wind >= (min_tailwind_effect_mps * 0.5)
+                )
+                
+                if is_favorable:
+                    segment_details = {
+                        "id": segment_id,
+                        "name": segment_name,
+                        "polyline_coords": coordinates,
+                        "strava_link": f"https://www.strava.com/segments/{segment_id}",
+                        "distance": segment.get('distance'),
+                        "avg_grade": segment.get('avg_grade'),
+                        "bearing": round(segment_bearing, 1),
+                        "wind_effect_mps": effective_wind,
+                        "wind_type": wind_type,
+                        "wind_angle": wind_effect.get('angle_difference', 0),
+                        "search_zone": search_zone
+                    }
+                    tailwind_segments.append(segment_details)
+                    
+                    if i < 10:  # Debug pour les premiers segments
+                        print(f"    FAVORABLE: {segment_name} - {wind_type} - {effective_wind:.2f} m/s")
+                    
+            except Exception as segment_error:
+                print(f"    Erreur segment {segment_name}: {segment_error}")
+                continue
+        
+        # Statistiques finales
+        print(f"\n--- STATISTIQUES FINALES ---")
+        print(f"Segments traités: {segments_processed}")
+        print(f"Segments avec coordonnées: {segments_with_coords}")
+        print(f"Répartition des vents:")
+        for wind_type, count in wind_stats.items():
+            percentage = (count / max(1, segments_with_coords)) * 100
+            print(f"  {wind_type}: {count} ({percentage:.1f}%)")
+        print(f"Segments avec vent favorable: {len(tailwind_segments)}")
+        
+        # Trier par effet du vent décroissant
+        tailwind_segments.sort(key=lambda x: x['wind_effect_mps'], reverse=True)
+        
+        print(f"=== FIN RECHERCHE SUPER OPTIMISEE ===\n")
+        return tailwind_segments, None
+        
+    except Exception as e:
+        return [], f"Erreur analyse du vent: {e}"
+
+# --- FONCTIONS EXISTANTES (inchangées pour compatibilité) ---
 def get_segment_details(segment_id, access_token_strava): 
     if not access_token_strava: return None
     endpoint = f"segments/{segment_id}" 
@@ -436,6 +836,7 @@ def generate_activity_report_with_overall_summary(
     hr_zones = calculate_hr_zones(user_fc_max)
     power_zones = calculate_power_zones(user_ftp)
 
+    # Récupération des données de base de l'activité
     activity_name = activity_details.get('name', 'Sortie sans nom')
     activity_type = activity_details.get('type', 'Activité')
     activity_distance_km = round(activity_details.get('distance', 0) / 1000, 2)
@@ -444,8 +845,70 @@ def generate_activity_report_with_overall_summary(
     activity_avg_hr = activity_details.get('average_heartrate')
     activity_max_hr_session = activity_details.get('max_heartrate') 
     activity_total_elevation_gain = activity_details.get('total_elevation_gain')
-    activity_avg_watts = activity_details.get('average_watts') 
+    activity_avg_watts = activity_details.get('average_watts')
+    activity_description = activity_details.get('description', '')
 
+    # NOUVEAU : Détecter les KOM et PR pour les mentionner dans le résumé global
+    kom_segments = []
+    pr_segments = []
+    top_segments = []
+    
+    if 'segment_efforts' in activity_details:
+        for effort in activity_details['segment_efforts']:
+            segment_name = effort.get('segment', {}).get('name', 'Segment inconnu')
+            kom_rank = effort.get('kom_rank')
+            pr_rank = effort.get('pr_rank')
+            
+            if kom_rank == 1:
+                kom_segments.append(segment_name)
+            if pr_rank == 1:
+                pr_segments.append(segment_name)
+            if kom_rank and kom_rank <= 5:  # Top 5 pour les mentions spéciales
+                top_segments.append((segment_name, kom_rank))
+
+    # Construire le texte des exploits pour le résumé global
+    exploits_text = ""
+    exploits_instruction = ""
+    
+    if kom_segments or pr_segments or top_segments:
+        exploits_parts = []
+        
+        if kom_segments:
+            if len(kom_segments) == 1:
+                exploits_parts.append(f"🏆 EXPLOIT MAJEUR : TU AS DÉCROCHÉ LE KOM SUR '{kom_segments[0]}' ! 👑")
+            else:
+                exploits_parts.append(f"🏆 EXPLOITS MAJEURS : TU AS DÉCROCHÉ {len(kom_segments)} KOM ! 👑 ({', '.join(kom_segments)})")
+        
+        if pr_segments:
+            if len(pr_segments) == 1:
+                exploits_parts.append(f"🥇 Record personnel établi sur '{pr_segments[0]}'")
+            else:
+                exploits_parts.append(f"🥇 {len(pr_segments)} records personnels établis ({', '.join(pr_segments)})")
+        
+        # Mentionner les top 5 qui ne sont pas des KOM
+        non_kom_tops = [(name, rank) for name, rank in top_segments if name not in kom_segments]
+        if non_kom_tops:
+            top_mentions = [f"Top {rank} sur '{name}'" for name, rank in non_kom_tops[:3]]  # Limiter à 3
+            exploits_parts.append(f"🏅 Excellents classements : {', '.join(top_mentions)}")
+        
+        exploits_text = "\n".join([f"- {part}" for part in exploits_parts])
+        
+        if kom_segments:
+            exploits_instruction = "IMPORTANT : Tu as décroché un ou plusieurs KOM sur cette sortie ! C'est un exploit majeur à célébrer avec enthousiasme ! Mentionne-le clairement et félicite chaleureusement l'athlète pour cet exploit. "
+        else:
+            exploits_instruction = "L'athlète a réalisé de belles performances sur des segments. Mentionne ces exploits avec enthousiasme. "
+
+    # Gestion de la description AVANT l'utilisation
+    description_text = ""
+    description_instruction = ""
+    if activity_description and activity_description.strip():
+        description_text = f"- Tes notes perso sur cette sortie : \"{activity_description}\""
+        description_instruction = "Si sa description personnelle contient des infos importantes (météo, ressenti, objectifs, problèmes), intègre-les intelligemment dans ton analyse. "
+    else:
+        description_text = "- Pas de notes personnelles ajoutées pour cette sortie."
+        description_instruction = ""
+
+    # Calcul de l'intensité
     intensity_comment = "Ta FC Max personnelle n'a pas été fournie ou est invalide, donc l'analyse d'intensité est basée sur les sensations générales."
     if hr_zones and activity_avg_hr and user_fc_max and user_fc_max > 0 : 
         percent_fc_max = (activity_avg_hr / user_fc_max) * 100
@@ -458,6 +921,7 @@ def generate_activity_report_with_overall_summary(
     elif activity_avg_hr:
          intensity_comment = f"Ta FC moyenne pour cette sortie a été de {activity_avg_hr} bpm. Avec ta FC Max, on pourrait décortiquer ça encore mieux !"
 
+    # Préparation des données pour le prompt avec les exploits
     overall_prompt_data = {
         "report_type": "résumé global de séance",
         "activity_name": activity_name,
@@ -469,9 +933,14 @@ def generate_activity_report_with_overall_summary(
         "activity_total_elevation_gain": f"{activity_total_elevation_gain} m" if activity_total_elevation_gain is not None else "N/A",
         "intensity_comment": intensity_comment,
         "activity_avg_watts": f"{activity_avg_watts:.0f}W" if activity_avg_watts else "N/A",
-        "user_ftp": f"{user_ftp}W" if user_ftp else "N/A"
+        "user_ftp": f"{user_ftp}W" if user_ftp else "N/A",
+        "description_text": description_text,
+        "description_instruction": description_instruction,
+        "exploits_text": exploits_text,
+        "exploits_instruction": exploits_instruction
     }
 
+    # Template amélioré pour le résumé global avec prise en compte des exploits
     overall_summary_template = """
     En tant que coach KOM Hunters, ton rôle est d'être super motivant, un peu comme un ami qui te connaît bien et qui est passionné par tes progrès ! 
     Adresse-toi directement à l'athlète en utilisant "tu". Sois chaleureux, positif et donne envie de repartir à l'aventure.
@@ -482,16 +951,23 @@ def generate_activity_report_with_overall_summary(
     - Ton cœur a joué la mélodie de l'effort à {activity_avg_hr} en moyenne, avec un high score à {activity_max_hr_session}.
     - Puissance moyenne (si dispo) : {activity_avg_watts} (ta FTP perso est à {user_ftp}).
     - Mon petit commentaire sur l'intensité : {intensity_comment}
+    {description_text}
+
+    {exploits_text}
 
     Rédige un petit paragraphe de débriefing pour cette séance. Commence par une exclamation ou une phrase d'accroche sympa et personnalisée pour la sortie "{activity_name}". 
-    Ensuite, commente l'effort global, l'intensité (en te basant sur le commentaire fourni et la relation FC moyenne/FC Max, ou Watts moyens/FTP).
-    Mets en lumière un ou deux aspects que tu trouves chouettes (la distance, la durée, le dénivelé, ou la gestion de l'effort si tu peux le deviner).
+    {exploits_instruction}Ensuite, commente l'effort global, l'intensité (en te basant sur le commentaire fourni et la relation FC moyenne/FC Max, ou Watts moyens/FTP).
+    {description_instruction}Mets en lumière un ou deux aspects que tu trouves chouettes (la distance, la durée, le dénivelé, ou la gestion de l'effort si tu peux le deviner).
     Termine par une phrase super motivante pour sa prochaine sortie, peut-être avec une petite touche d'humour sportif ou un clin d'œil.
     Fais comme si tu parlais à un pote après sa sortie, avec enthousiasme et bienveillance !
     """
+
     print(f"\n(strava_analyzer) Génération du résumé global pour l'activité '{activity_name}'...")
+    print(f"KOM détectés: {len(kom_segments)}, PR détectés: {len(pr_segments)}, Top 5: {len(top_segments)}")
+    
     overall_summary_report = generate_llm_report_langchain(overall_summary_template, overall_prompt_data, openai_api_key)
     
+    # Analyse des segments (code existant avec amélioration du scoring)
     segment_reports_list = [] 
     if 'segment_efforts' in activity_details:
         notable_efforts = []
@@ -502,12 +978,17 @@ def generate_activity_report_with_overall_summary(
             if is_pr or is_top_rank:
                 rank_text_parts = []
                 if is_pr: rank_text_parts.append("Record Personnel (PR) ! Chapeau bas !")
-                if is_top_rank: rank_text_parts.append(f"Superbe Top {kom_rank} !")
+                if kom_rank == 1: rank_text_parts.append("KOM DÉCROCHÉ ! Tu es le nouveau roi ! 👑")
+                elif is_top_rank: rank_text_parts.append(f"Superbe Top {kom_rank} !")
                 effort['notable_rank_text'] = " ".join(rank_text_parts) if rank_text_parts else "Belle performance !"
+                
+                # Score de priorité amélioré pour prioriser les KOM
                 score = float('inf')
-                if is_pr: score = 0  
-                if is_top_rank: score = min(score, kom_rank) 
-                elif is_pr and not is_top_rank: score = 0.5 
+                if kom_rank == 1: score = -1  # KOM a la priorité absolue
+                elif is_pr: score = 0  
+                elif is_top_rank: score = kom_rank
+                else: score = 100
+                
                 effort['performance_score'] = score
                 notable_efforts.append(effort)
         
@@ -565,7 +1046,7 @@ def generate_activity_report_with_overall_summary(
                 }
                 
                 segment_report_template = """
-                En tant que coach KOM Hunters, toujours aussi motivant et un brin espiègle, analyse cette performance spécifiquesur le segment "{segment_name}".
+                En tant que coach KOM Hunters, toujours aussi motivant et un brin espiègle, analyse cette performance spécifique sur le segment "{segment_name}".
                 Ce rapport fait partie d'un débriefing plus large de la sortie, donc commence directement ton analyse sans salutations supplémentaires.
                 Adresse-toi à l'athlète avec "tu".
 
@@ -590,6 +1071,8 @@ def generate_activity_report_with_overall_summary(
                 3.  **"Ton plan d'attaque MACHIAVÉLIQUE pour la prochaine tentative sur '{segment_name}' :"** (Donne des conseils très concrets pour chaque section clé identifiée dans le "Profil de dénivelé détaillé". Intègre des conseils sur les zones FC/Puissance à viser, la cadence, la gestion des efforts intenses en fonction du profil. Ex: "Sur la première rampe, vise la Zone 4 en FC et essaie de maintenir tes watts autour de X W/kg...")
                 Conclus par une phrase qui donne envie de retourner chasser ce segment !
                 """
+                
+                # Gestion de la section watts
                 watts_section_text_segment = f"- Pas de données de puissance pour cet effort, mais avec la FC (zones basées sur ta FC Max de {user_fc_max} bpm) et la cadence on a déjà de quoi faire !"
                 watts_avg_val = segment_prompt_data.get('watts_avg')
                 if isinstance(watts_avg_val, (int, float)): 
@@ -622,7 +1105,6 @@ def generate_activity_report_with_overall_summary(
                 for key in keys_for_template_segment: 
                     segment_prompt_data_filled.setdefault(key, 'N/A')
 
-
                 report_text = generate_llm_report_langchain(segment_report_template, segment_prompt_data_filled, openai_api_key) 
                 segment_reports_list.append({"segment_name": segment_name, "report": report_text})
                 time.sleep(1) 
@@ -631,5 +1113,3 @@ def generate_activity_report_with_overall_summary(
 
     print(f"\n(strava_analyzer) --- FIN DE LA COLLECTE DES DONNÉES POUR LE RAPPORT D'ACTIVITÉ ID: {activity_id} ---")
     return {"activity_name": activity_name, "overall_summary": overall_summary_report, "segment_reports": segment_reports_list}
-
-# Pas de bloc if __name__ == '__main__' ici, car c'est une librairie.

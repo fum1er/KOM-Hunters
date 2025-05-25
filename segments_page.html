@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>KOM Hunters - Dashboard</title>
+    <style>
+        /* Styles pour la page principale */
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .main-header {
+            background-color: #1a202c;
+            color: white;
+            padding: 1rem;
+            text-align: center;
+            flex-shrink: 0;
+            position: relative;
+        }
+        
+        .main-title {
+            margin: 0 0 10px 0;
+            font-size: 1.8rem;
+        }
+        
+        .navigation-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin-bottom: 15px;
+        }
+        
+        .nav-button {
+            padding: 10px 15px;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+        }
+        
+        .nav-button-segments {
+            background-color: #3182CE;
+        }
+        
+        .nav-button-activities {
+            background-color: #38A169;
+        }
+        
+        .token-status {
+            color: #A0AEC0;
+            margin-bottom: 5px;
+            font-size: 0.8em;
+        }
+        
+        .token-info {
+            color: #A0AEC0;
+            font-size: 0.8em;
+            white-space: pre-line;
+        }
+        
+        .search-section {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 5px;
+            margin-top: 10px;
+        }
+        
+        .address-input-container {
+            position: relative;
+            width: 400px;
+        }
+        
+        .address-input {
+            padding: 10px;
+            font-size: 1rem;
+            border-radius: 5px;
+            border: 1px solid #4A5568;
+            width: 100%;
+            background-color: #2D3748;
+            color: #E2E8F0;
+            box-sizing: border-box;
+        }
+        
+        .address-input::placeholder {
+            color: #A0AEC0;
+        }
+        
+        .search-button {
+            padding: 10px 15px;
+            font-size: 1rem;
+            background-color: #3182CE;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-top: 60px;
+        }
+        
+        .search-button:hover {
+            background-color: #2C5AA0;
+        }
+        
+        .status-message {
+            margin-top: 10px;
+            min-height: 20px;
+            color: #A0AEC0;
+        }
+        
+        .map-container {
+            flex-grow: 1;
+            min-height: 0;
+        }
+        
+        /* Styles pour les suggestions d'adresse */
+        .suggestion-item-hover:hover {
+            background-color: #f5f5f5 !important;
+            transition: background-color 0.2s ease;
+        }
+        
+        /* Responsive */
+        @media (max-width: 768px) {
+            .main-title {
+                font-size: 1.5rem;
+            }
+            
+            .address-input-container {
+                width: 90%;
+            }
+            
+            .search-button {
+                margin-top: 40px;
+                padding: 12px 20px;
+            }
+            
+            .main-header {
+                padding: 1rem 0.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Cette structure sera recréée par Dash en Python -->
+    <!-- Les IDs correspondent exactement aux composants Dash -->
+    <div class="main-header">
+        <h1 class="main-title">KOM Hunters - Dashboard</h1>
+        <div class="navigation-buttons">
+            <a href="/" class="nav-button nav-button-segments">🔍 Recherche de Segments</a>
+            <a href="/activities" class="nav-button nav-button-activities">📊 Analyse d'Activités</a>
+        </div>
+        <div id="token-status-message" class="token-status">Statut Strava : Aucun token récupéré. Cliquez sur 'Se connecter' en haut à droite.</div>
+        <div id="new-token-info-display" class="token-info">Cliquez sur 'Se connecter' pour récupérer vos tokens Strava.</div>
+        <div class="search-section">
+            <div class="address-input-container">
+                <input id="address-input" type="text" placeholder="Commencez à taper une ville ou une adresse..." class="address-input">
+                <div id="live-address-suggestions-container"></div>
+            </div>
+            <button id="search-button" class="search-button">Chercher les Segments !</button>
+        </div>
+        <div id="search-status-message" class="status-message"></div>
+    </div>
+    
+    <div id="map-results-container" class="map-container"></div>
+</body>
+</html>
