@@ -15,22 +15,39 @@ try:
     GEOPY_AVAILABLE = True
 except ImportError:
     GEOPY_AVAILABLE = False
+    print("⚠️ geopy non disponible - fonctionnalité de géocodage limitée")
 
 print("🚀 KOM HUNTERS - DÉMARRAGE COMPLET")
 
-# --- IMPORT STRAVA_ANALYZER CORRIGÉ ---
+# --- AJOUT POUR S'ASSURER QUE LE RÉPERTOIRE ACTUEL EST DANS SYS.PATH ---
 import sys
 current_script_directory = os.path.dirname(os.path.abspath(__file__))
 if current_script_directory not in sys.path:
     sys.path.insert(0, current_script_directory)
-    
+print(f"✅ Répertoire du script ajouté à sys.path: {current_script_directory}")
+
+# --- IMPORT STRAVA_ANALYZER AVEC GESTION D'ERREUR ROBUSTE ---
 STRAVA_ANALYZER_AVAILABLE = False
 try:
     import strava_analyzer
     STRAVA_ANALYZER_AVAILABLE = True
-    print("✅ strava_analyzer importé avec succès")
+    print(f"✅ strava_analyzer importé avec succès. Chemin: {strava_analyzer.__file__}")
+except ModuleNotFoundError as e:
+    print(f"❌ ERREUR CRITIQUE - Module 'strava_analyzer' non trouvé dans sys.path: {sys.path}")
+    print(f"❌ Détails de l'erreur: {e}")
+    print("❌ Vérifiez que le fichier strava_analyzer.py est présent dans le même répertoire")
+    # Ne pas faire sys.exit() sur render.com, juste marquer comme non disponible
+    STRAVA_ANALYZER_AVAILABLE = False
+except ImportError as e:
+    print(f"❌ Erreur d'import de strava_analyzer - dépendances manquantes: {e}")
+    print("❌ Vérifiez que toutes les dépendances sont installées:")
+    print("   - langchain_openai")
+    print("   - polyline") 
+    print("   - requests")
+    STRAVA_ANALYZER_AVAILABLE = False
 except Exception as e:
-    print(f"❌ strava_analyzer non disponible: {e}")
+    print(f"❌ Erreur inattendue lors de l'import de strava_analyzer: {e}")
+    STRAVA_ANALYZER_AVAILABLE = False
 
 # Configuration des APIs
 MAPBOX_ACCESS_TOKEN = os.getenv('MAPBOX_ACCESS_TOKEN', '')
@@ -39,7 +56,7 @@ STRAVA_CLIENT_SECRET = os.getenv('STRAVA_CLIENT_SECRET', '')
 WEATHER_API_KEY = os.getenv('OPENWEATHERMAP_API_KEY', '')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 
-# Configuration URL dynamique
+# Configuration URL dynamique pour render.com
 if os.getenv('RENDER'):
     BASE_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'kom-hunters.onrender.com')}"
 else:
@@ -51,8 +68,10 @@ STRAVA_SCOPES = 'read,activity:read_all,profile:read_all'
 print(f"🌐 BASE_URL: {BASE_URL}")
 print(f"🔄 STRAVA_REDIRECT_URI: {STRAVA_REDIRECT_URI}")
 
-# Variables globales pour les tokens
+# Variables globales pour les tokens - SEULEMENT OAuth, pas de .env
 current_strava_access_token = None
+current_refresh_token = None
+token_expires_at = None
 new_token_info_global = "Cliquez sur 'Se connecter avec Strava' pour commencer."
 
 # Configuration pour l'analyse d'activités
@@ -89,10 +108,10 @@ def get_strava_logo_base64():
             logo_base64 = base64.b64encode(logo_data).decode('utf-8')
             return f"data:image/png;base64,{logo_base64}"
     except FileNotFoundError:
-        print(f"--- ATTENTION: Logo Strava non trouvé à {logo_path} ---")
+        print(f"⚠️ Logo Strava non trouvé à {logo_path}")
         return None
     except Exception as e:
-        print(f"--- ERREUR: Impossible de charger le logo Strava: {e} ---")
+        print(f"⚠️ Impossible de charger le logo Strava: {e}")
         return None
 
 # --- Composant du logo Strava avec statut et bouton de connexion ---
@@ -228,34 +247,67 @@ def create_strava_status_component():
         }
     )
 
-# --- Fonctions utilitaires ---
-def fetch_strava_activities(access_token, page=1, per_page=ACTIVITIES_PER_LOAD):
-    """Récupère les activités depuis l'API Strava"""
+# --- NOUVELLE Fonction pour récupérer les activités vélo avec logique améliorée ---
+def fetch_cycling_activities_until_target(access_token, target_count=ACTIVITIES_PER_LOAD, max_pages=10):
+    """
+    Récupère les activités vélo jusqu'à atteindre le nombre cible,
+    en continuant à chercher sur plusieurs pages si nécessaire.
+    """
     if not access_token:
         return [], "Token Strava manquant"
     
     headers = {'Authorization': f'Bearer {access_token}'}
     url = 'https://www.strava.com/api/v3/athlete/activities'
-    params = {
-        'page': page,
-        'per_page': per_page
-    }
+    
+    all_cycling_activities = []
+    page = 1
+    per_page = 30  # On récupère plus d'activités par page pour être efficace
+    
+    print(f"🔍 Recherche de {target_count} activités vélo")
     
     try:
-        print(f"--- DEBUG: Récupération activités page {page}, {per_page} par page ---")
-        response = requests.get(url, headers=headers, params=params, timeout=15)
-        response.raise_for_status()
+        while len(all_cycling_activities) < target_count and page <= max_pages:
+            print(f"📄 Page {page}, {per_page} activités par page")
+            
+            params = {
+                'page': page,
+                'per_page': per_page
+            }
+            
+            response = requests.get(url, headers=headers, params=params, timeout=15)
+            response.raise_for_status()
+            
+            activities = response.json()
+            
+            if not activities:  # Plus d'activités disponibles
+                print(f"🏁 Plus d'activités disponibles après page {page-1}")
+                break
+            
+            # Filtrer les activités vélo de cette page
+            page_cycling_activities = []
+            for activity in activities:
+                if activity.get('type') in CYCLING_ACTIVITY_TYPES:
+                    page_cycling_activities.append(activity)
+            
+            all_cycling_activities.extend(page_cycling_activities)
+            
+            print(f"📊 Page {page}: {len(activities)} total, {len(page_cycling_activities)} vélo")
+            print(f"📈 Total vélo: {len(all_cycling_activities)}/{target_count}")
+            
+            # Si on a moins d'activités que demandé sur cette page, on a probablement atteint la fin
+            if len(activities) < per_page:
+                print(f"🏁 Fin des activités atteinte")
+                break
+                
+            page += 1
+            time.sleep(0.2)  # Petit délai pour respecter les limites de l'API
         
-        activities = response.json()
+        # Limiter au nombre cible si on a plus que demandé
+        if len(all_cycling_activities) > target_count:
+            all_cycling_activities = all_cycling_activities[:target_count]
         
-        # Filtrer seulement les activités de vélo
-        cycling_activities = []
-        for activity in activities:
-            if activity.get('type') in CYCLING_ACTIVITY_TYPES:
-                cycling_activities.append(activity)
-        
-        print(f"--- DEBUG: {len(activities)} activités récupérées, {len(cycling_activities)} activités vélo ---")
-        return cycling_activities, None
+        print(f"✅ Récupération terminée: {len(all_cycling_activities)} activités vélo")
+        return all_cycling_activities, None
         
     except requests.exceptions.HTTPError as e:
         error_msg = f"Erreur HTTP API Strava: {e}"
@@ -264,13 +316,97 @@ def fetch_strava_activities(access_token, page=1, per_page=ACTIVITIES_PER_LOAD):
                 error_msg = "Token Strava expiré ou invalide. Veuillez vous reconnecter."
             elif e.response.status_code == 429:
                 error_msg = "Limite de taux API Strava atteinte. Veuillez patienter."
-        print(f"--- ERREUR: {error_msg} ---")
+        print(f"❌ {error_msg}")
         return [], error_msg
     except Exception as e:
         error_msg = f"Erreur lors de la récupération des activités: {e}"
-        print(f"--- ERREUR: {error_msg} ---")
+        print(f"❌ {error_msg}")
         return [], error_msg
 
+def fetch_more_cycling_activities(access_token, existing_activities, additional_count=ACTIVITIES_PER_LOAD):
+    """Récupère des activités vélo supplémentaires"""
+    if not access_token:
+        return [], "Token Strava manquant"
+    
+    # Calculer à partir de quelle page commencer
+    existing_count = len(existing_activities)
+    estimated_start_page = max(1, (existing_count // 20) + 1)  # Estimation conservative
+    
+    print(f"📥 Chargement de {additional_count} activités supplémentaires")
+    print(f"📊 {existing_count} existantes, page estimée: {estimated_start_page}")
+    
+    headers = {'Authorization': f'Bearer {access_token}'}
+    url = 'https://www.strava.com/api/v3/athlete/activities'
+    
+    all_new_activities = []
+    page = estimated_start_page
+    per_page = 30
+    max_pages_to_try = 10
+    pages_tried = 0
+    
+    # Obtenir les IDs des activités existantes pour éviter les doublons
+    existing_ids = set(activity['id'] for activity in existing_activities)
+    
+    try:
+        while len(all_new_activities) < additional_count and pages_tried < max_pages_to_try:
+            print(f"📄 Page {page} pour plus d'activités")
+            
+            params = {
+                'page': page,
+                'per_page': per_page
+            }
+            
+            response = requests.get(url, headers=headers, params=params, timeout=15)
+            response.raise_for_status()
+            
+            activities = response.json()
+            
+            if not activities:
+                print(f"🏁 Plus d'activités disponibles")
+                break
+            
+            # Filtrer les nouvelles activités vélo (pas déjà présentes)
+            new_cycling_activities = []
+            for activity in activities:
+                if (activity.get('type') in CYCLING_ACTIVITY_TYPES and 
+                    activity['id'] not in existing_ids):
+                    new_cycling_activities.append(activity)
+            
+            all_new_activities.extend(new_cycling_activities)
+            
+            print(f"📊 Page {page}: {len(new_cycling_activities)} nouvelles vélo")
+            print(f"📈 Total nouvelles: {len(all_new_activities)}/{additional_count}")
+            
+            if len(activities) < per_page:
+                print(f"🏁 Fin atteinte")
+                break
+                
+            page += 1
+            pages_tried += 1
+            time.sleep(0.2)
+        
+        # Limiter au nombre demandé
+        if len(all_new_activities) > additional_count:
+            all_new_activities = all_new_activities[:additional_count]
+        
+        print(f"✅ Chargement terminé: {len(all_new_activities)} nouvelles activités")
+        return all_new_activities, None
+        
+    except requests.exceptions.HTTPError as e:
+        error_msg = f"Erreur HTTP API Strava: {e}"
+        if hasattr(e, 'response') and e.response is not None:
+            if e.response.status_code == 401:
+                error_msg = "Token Strava expiré ou invalide. Veuillez vous reconnecter."
+            elif e.response.status_code == 429:
+                error_msg = "Limite de taux API Strava atteinte. Veuillez patienter."
+        print(f"❌ {error_msg}")
+        return [], error_msg
+    except Exception as e:
+        error_msg = f"Erreur lors de la récupération des activités supplémentaires: {e}"
+        print(f"❌ {error_msg}")
+        return [], error_msg
+
+# --- Fonctions utilitaires ---
 def format_activity_for_dropdown(activity):
     """Formate une activité pour l'affichage dans le dropdown"""
     name = activity.get('name', 'Activité sans nom')
@@ -305,7 +441,7 @@ def get_address_suggestions(query_str, limit=5):
     if not GEOPY_AVAILABLE:
         return [], "Service de géocodage non disponible"
     
-    geolocator = Nominatim(user_agent="kom_hunters_dash_v6")
+    geolocator = Nominatim(user_agent="kom_hunters_dash_v7")
     try:
         locations = geolocator.geocode(query_str, exactly_one=False, limit=limit, timeout=7)
         if locations:
@@ -320,7 +456,7 @@ def geocode_address_directly(address_str):
     if not GEOPY_AVAILABLE:
         return None, "Service de géocodage non disponible", None
     
-    geolocator = Nominatim(user_agent="kom_hunters_dash_v6")
+    geolocator = Nominatim(user_agent="kom_hunters_dash_v7")
     try:
         location = geolocator.geocode(address_str, timeout=10)
         if location:
@@ -507,10 +643,11 @@ app.index_string = '''
 # Layout principal avec ton design original
 def build_main_page_layout():
     global new_token_info_global
+    global current_strava_access_token
     
-    token_display = "Non disponible. Veuillez vous connecter."
+    token_display = "Aucun token récupéré. Cliquez sur 'Se connecter' en haut à droite."
     if current_strava_access_token:
-        token_display = f"...{current_strava_access_token[-6:]}" if len(current_strava_access_token) > 6 else "Présent (court)"
+        token_display = f"Token récupéré ✓ ...{current_strava_access_token[-6:]}" if len(current_strava_access_token) > 6 else "Token récupéré ✓"
 
     return html.Div(style={'fontFamily': 'Inter, sans-serif', 'padding': '0', 'margin': '0', 'height': '100vh', 'display': 'flex', 'flexDirection': 'column'}, children=[
         html.Div(style={'backgroundColor': '#1a202c', 'color': 'white', 'padding': '1rem', 'textAlign': 'center', 'flexShrink': '0', 'position': 'relative'}, children=[
@@ -522,7 +659,7 @@ def build_main_page_layout():
                 html.A(html.Button("🔍 Recherche de Segments", style={'padding': '10px 15px', 'backgroundColor': '#3182CE', 'color': 'white', 'border': 'none', 'borderRadius': '5px', 'cursor': 'pointer'}), href="/"),
                 html.A(html.Button("📊 Analyse d'Activités", style={'padding': '10px 15px', 'backgroundColor': '#38A169', 'color': 'white', 'border': 'none', 'borderRadius': '5px', 'cursor': 'pointer'}), href="/activities")
             ]),
-            html.Div(id='token-status-message', children=f"Token Strava actuel : {token_display}", style={'color': '#A0AEC0', 'marginBottom': '5px', 'fontSize':'0.8em'}),
+            html.Div(id='token-status-message', children=f"Statut Strava : {token_display}", style={'color': '#A0AEC0', 'marginBottom': '5px', 'fontSize':'0.8em'}),
             html.Div(id='new-token-info-display', children=new_token_info_global, style={'color': '#A0AEC0', 'fontSize':'0.8em', 'whiteSpace': 'pre-line'}),
             html.Div(style={'display': 'flex', 'flexDirection': 'column', 'alignItems': 'center', 'gap': '5px', 'marginTop': '10px'}, children=[ 
                 html.Div(style={'position': 'relative', 'width': '400px'}, children=[
@@ -627,10 +764,12 @@ print("✅ Layout défini")
 )
 def display_page_content(pathname, search_query_params):
     global current_strava_access_token 
+    global current_refresh_token
+    global token_expires_at
     global new_token_info_global
     
     if pathname == '/strava_callback' and search_query_params:
-        print(f"DEBUG display_page_content: Traitement OAuth - search_query_params = {search_query_params}")
+        print(f"🔄 Traitement OAuth - search_query_params = {search_query_params}")
         
         try:
             params = {}
@@ -644,16 +783,16 @@ def display_page_content(pathname, search_query_params):
                     key, value = param_pair.split('=', 1)
                     params[key] = value
             
-            print(f"Parametres analyses: {params}")
+            print(f"📊 Paramètres analysés: {params}")
             
             auth_code = params.get('code')
             error = params.get('error')
 
             if error:
-                new_token_info_global = f"Erreur d'autorisation Strava: {error}"
+                new_token_info_global = f"❌ Erreur d'autorisation Strava: {error}"
                 print(new_token_info_global)
             elif auth_code:
-                print(f"Code d'autorisation Strava reçu: {auth_code[:20]}...")
+                print(f"🔑 Code d'autorisation Strava reçu: {auth_code[:20]}...")
                 if STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET:
                     token_url = 'https://www.strava.com/oauth/token'
                     
@@ -664,12 +803,12 @@ def display_page_content(pathname, search_query_params):
                         'grant_type': 'authorization_code'
                     }
                     
-                    print(f"Payload envoye à Strava: {payload}")
+                    print(f"📤 Payload envoyé à Strava: {payload}")
                     
                     try:
                         response = requests.post(token_url, data=payload, timeout=15)
-                        print(f"Reponse Strava - Status: {response.status_code}")
-                        print(f"Reponse Strava - Content: {response.text}")
+                        print(f"📨 Réponse Strava - Status: {response.status_code}")
+                        print(f"📨 Réponse Strava - Content: {response.text}")
                         
                         response.raise_for_status()
                         token_data = response.json()
@@ -678,43 +817,48 @@ def display_page_content(pathname, search_query_params):
                         refresh_token = token_data.get('refresh_token') 
                         expires_at = token_data.get('expires_at')
                         
+                        # IMPORTANT : Stockage SEULEMENT en mémoire, pas dans .env
                         if current_strava_access_token:
-                            print(f"Nouveau Strava Access Token stocké: ...{current_strava_access_token[-6:]}")
+                            current_refresh_token = refresh_token
+                            token_expires_at = expires_at
+                            print(f"✅ Nouveau Strava Access Token stocké en mémoire: ...{current_strava_access_token[-6:]}")
                         
                         new_token_info_global = (
-                            f"Nouveau Token d'Accès Obtenu: ...{current_strava_access_token[-6:] if current_strava_access_token else 'ERREUR'}\n"
+                            f"🎉 CONNEXION RÉUSSIE !\n"
+                            f"Token d'Accès: ...{current_strava_access_token[-6:] if current_strava_access_token else 'ERREUR'}\n"
                             f"Refresh Token: ...{refresh_token[-6:] if refresh_token else 'N/A'}\n"
-                            f"Expire à (UTC): {datetime.utcfromtimestamp(expires_at).strftime('%Y-%m-%d %H:%M:%S') if expires_at else 'N/A'}"
+                            f"Expire à (UTC): {datetime.utcfromtimestamp(expires_at).strftime('%Y-%m-%d %H:%M:%S') if expires_at else 'N/A'}\n"
+                            f"✅ Vous êtes maintenant connecté à Strava !"
                         )
-                        print(f"Nouveaux tokens Strava obtenus: {new_token_info_global}")
+                        print(f"✅ Tokens Strava récupérés avec succès")
                         
                     except requests.exceptions.RequestException as e:
-                        print(f"Erreur lors de l'échange du code OAuth: {e}")
+                        print(f"❌ Erreur lors de l'échange du code OAuth: {e}")
                         if hasattr(e, 'response') and e.response is not None:
-                            print(f"Contenu de l'erreur: {e.response.text}")
+                            print(f"📨 Contenu de l'erreur: {e.response.text}")
                             try:
                                 error_json = e.response.json()
-                                print(f"Erreur JSON detaillee: {error_json}")
-                                new_token_info_global = f"Erreur API Strava: {error_json.get('message', 'Erreur inconnue')}"
+                                print(f"📨 Erreur JSON détaillée: {error_json}")
+                                new_token_info_global = f"❌ Erreur API Strava: {error_json.get('message', 'Erreur inconnue')}"
                             except:
-                                new_token_info_global = f"Erreur API Strava: {e.response.status_code} - {e.response.text}"
+                                new_token_info_global = f"❌ Erreur API Strava: {e.response.status_code} - {e.response.text}"
                         else:
-                            new_token_info_global = f"Erreur lors de l'échange du code OAuth: {e}"
+                            new_token_info_global = f"❌ Erreur lors de l'échange du code OAuth: {e}"
                 else:
-                    new_token_info_global = "Erreur: Client ID ou Client Secret Strava non configurés."
+                    new_token_info_global = "❌ Erreur: Client ID ou Client Secret Strava non configurés."
             else:
-                new_token_info_global = "Erreur: Aucun code d'autorisation reçu de Strava."
-                print("Aucun code d'autorisation dans les parametres")
+                new_token_info_global = "❌ Erreur: Aucun code d'autorisation reçu de Strava."
+                print("❌ Aucun code d'autorisation dans les paramètres")
                 
         except Exception as e:
-            print(f"Erreur lors du traitement OAuth: {e}")
-            new_token_info_global = f"Erreur lors du traitement OAuth: {e}"
+            print(f"❌ Erreur lors du traitement OAuth: {e}")
+            new_token_info_global = f"❌ Erreur lors du traitement OAuth: {e}"
         
         return build_main_page_layout()
     
     elif pathname == '/strava_callback':
         return html.Div([
-            html.H2("Traitement de l'autorisation Strava..."),
+            html.H2("⏳ Traitement de l'autorisation Strava..."),
             html.P("Vous allez être redirigé(e) sous peu.", id="callback-message"),
             dcc.Interval(id='redirect-interval', interval=2000, n_intervals=0, max_intervals=1),
             dcc.Location(id='redirect-location', refresh=True)
@@ -820,13 +964,13 @@ def select_suggestion(n_clicks_list, original_address_input):
         clicked_id_dict = json.loads(triggered_id_str.replace("'", "\"")) 
         clicked_index = clicked_id_dict['index']
     except Exception as e:
-        print(f"Erreur parsing ID suggestion: {e}, ID: {triggered_id_str}")
+        print(f"❌ Erreur parsing ID suggestion: {e}, ID: {triggered_id_str}")
         raise dash.exceptions.PreventUpdate
     
     current_suggestions_data, _ = get_address_suggestions(original_address_input, limit=5)
     if current_suggestions_data and 0 <= clicked_index < len(current_suggestions_data):
         selected_suggestion = current_suggestions_data[clicked_index]
-        print(f"Suggestion sélectionnée: {selected_suggestion['display_name']}")
+        print(f"✅ Suggestion sélectionnée: {selected_suggestion['display_name']}")
         
         hidden_style = {'display': 'none'}
         
@@ -847,7 +991,7 @@ def select_suggestion(n_clicks_list, original_address_input):
 def search_and_display_segments(n_clicks, address_input_value, selected_suggestion_data):
     global current_strava_access_token 
     
-    print(f"\n=== DEBUT RECHERCHE DE SEGMENTS ===")
+    print(f"\n=== 🔍 DEBUT RECHERCHE DE SEGMENTS ===")
     print(f"Token disponible: {'✅' if current_strava_access_token else '❌'}")
     print(f"STRAVA_ANALYZER_AVAILABLE: {'✅' if STRAVA_ANALYZER_AVAILABLE else '❌'}")
     
@@ -860,63 +1004,64 @@ def search_and_display_segments(n_clicks, address_input_value, selected_suggesti
             search_lat = selected_suggestion_data['lat']
             search_lon = selected_suggestion_data['lon']
             display_address = selected_suggestion_data['display_name']
-            print(f"Coordonnees depuis suggestion: {search_lat:.4f}, {search_lon:.4f} - '{display_address}'")
+            print(f"📍 Coordonnées depuis suggestion: {search_lat:.4f}, {search_lon:.4f} - '{display_address}'")
         elif address_input_value:
-            print(f"Geocodage direct pour: '{address_input_value}'")
+            print(f"🌐 Géocodage direct pour: '{address_input_value}'")
             coords, error_msg, addr_disp = geocode_address_directly(address_input_value)
             if coords:
                 search_lat, search_lon = coords
                 display_address = addr_disp
-                print(f"Geocodage reussi: {search_lat:.4f}, {search_lon:.4f} - '{display_address}'")
+                print(f"✅ Géocodage réussi: {search_lat:.4f}, {search_lon:.4f} - '{display_address}'")
             else: 
                 error_message_search = error_msg
-                print(f"Erreur de geocodage: {error_msg}")
+                print(f"❌ Erreur de géocodage: {error_msg}")
         else: 
             error_message_search = "Veuillez entrer une adresse ou sélectionner une suggestion."
-            print("Aucune adresse fournie")
+            print("❌ Aucune adresse fournie")
     except Exception as e:
         error_message_search = f"Erreur lors de la détermination des coordonnées: {e}"
-        print(f"Exception lors du geocodage: {e}")
+        print(f"❌ Exception lors du géocodage: {e}")
 
     if error_message_search:
-        print(f"Retour avec erreur: {error_message_search}")
+        print(f"🔙 Retour avec erreur: {error_message_search}")
         return html.Div([
-            html.H3("Erreur", style={'textAlign': 'center', 'color': 'red', 'padding': '20px'})
+            html.H3("❌ Erreur", style={'textAlign': 'center', 'color': 'red', 'padding': '20px'})
         ]), f"Erreur: {error_message_search}", None 
 
     if search_lat is None or search_lon is None: 
-        print("Coordonnees invalides")
+        print("❌ Coordonnées invalides")
         return html.Div([
-            html.H3("Coordonnées invalides", style={'textAlign': 'center', 'color': 'red', 'padding': '20px'})
+            html.H3("❌ Coordonnées invalides", style={'textAlign': 'center', 'color': 'red', 'padding': '20px'})
         ]), "Impossible de déterminer les coordonnées pour la recherche.", None
 
-    print(f"\nVerification des acces:")
-    print(f"Token Strava: {'Present' if current_strava_access_token else 'MANQUANT'}")
-    print(f"Cle meteo: {'Presente' if WEATHER_API_KEY else 'MANQUANTE'}")
-    print(f"Analyzer disponible: {'OUI' if STRAVA_ANALYZER_AVAILABLE else 'NON'}")
+    print(f"\n🔍 Vérification des accès:")
+    print(f"Token Strava: {'✅ Présent' if current_strava_access_token else '❌ MANQUANT'}")
+    print(f"Clé météo: {'✅ Présente' if WEATHER_API_KEY else '❌ MANQUANTE'}")
+    print(f"Analyzer disponible: {'✅ OUI' if STRAVA_ANALYZER_AVAILABLE else '❌ NON'}")
     
     if not current_strava_access_token: 
-        print("Arret: Token Strava manquant")
+        print("⛔ Arrêt: Token Strava manquant")
         return html.Div([
-            html.H3("Token Strava manquant", style={'textAlign': 'center', 'color': 'orange', 'padding': '20px'}),
+            html.H3("🔒 Token Strava manquant", style={'textAlign': 'center', 'color': 'orange', 'padding': '20px'}),
             html.P("Veuillez vous connecter via le bouton ci-dessus", style={'textAlign': 'center'})
         ]), "Erreur: Token Strava non disponible. Veuillez vous connecter via le bouton.", None
         
     if not WEATHER_API_KEY:
-        print("Arret: Cle meteo manquante")
+        print("⛔ Arrêt: Clé météo manquante")
         return html.Div([
-            html.H3("Configuration manquante", style={'textAlign': 'center', 'color': 'red', 'padding': '20px'})
+            html.H3("⚙️ Configuration manquante", style={'textAlign': 'center', 'color': 'red', 'padding': '20px'})
         ]), "Erreur de configuration serveur: Clé API Météo manquante.", None
     
     if not STRAVA_ANALYZER_AVAILABLE:
-        print("Arret: Strava analyzer manquant")
+        print("⛔ Arrêt: Strava analyzer manquant")
         return html.Div([
-            html.H3("Module d'analyse non disponible", style={'textAlign': 'center', 'color': 'red', 'padding': '20px'}),
-            html.P("Le module strava_analyzer n'a pas pu être importé.", style={'textAlign': 'center'})
+            html.H3("🔧 Module d'analyse non disponible", style={'textAlign': 'center', 'color': 'red', 'padding': '20px'}),
+            html.P("Le module strava_analyzer n'a pas pu être importé.", style={'textAlign': 'center'}),
+            html.P("Vérifiez que le fichier strava_analyzer.py est présent et que toutes les dépendances sont installées.", style={'textAlign': 'center', 'fontSize': '0.9em', 'color': '#666'})
         ]), "Erreur: Module d'analyse non disponible.", None
 
     try:
-        print(f"\nLancement de la recherche de segments avec vent favorable...")
+        print(f"\n🚀 Lancement de la recherche de segments avec vent favorable...")
         found_segments, segments_error_msg = strava_analyzer.find_tailwind_segments_live( 
             search_lat, search_lon, SEARCH_RADIUS_KM, 
             current_strava_access_token, WEATHER_API_KEY, 
@@ -924,29 +1069,30 @@ def search_and_display_segments(n_clicks, address_input_value, selected_suggesti
         )
         
         if segments_error_msg:
-            print(f"Erreur lors de la recherche: {segments_error_msg}")
+            print(f"❌ Erreur lors de la recherche: {segments_error_msg}")
             return html.Div([
-                html.H3("Erreur de recherche", style={'textAlign': 'center', 'color': 'red', 'padding': '20px'}),
+                html.H3("❌ Erreur de recherche", style={'textAlign': 'center', 'color': 'red', 'padding': '20px'}),
                 html.P(f"{segments_error_msg}", style={'textAlign': 'center'})
             ]), f"Erreur lors de la recherche de segments: {segments_error_msg}", None
             
-        print(f"Recherche terminee: {len(found_segments)} segment(s) trouve(s)")
+        print(f"✅ Recherche terminée: {len(found_segments)} segment(s) trouvé(s)")
         
     except Exception as e:
-        print(f"Exception lors de la recherche de segments: {e}")
+        print(f"❌ Exception lors de la recherche de segments: {e}")
         return html.Div([
-            html.H3("Erreur inattendue", style={'textAlign': 'center', 'color': 'red', 'padding': '20px'})
+            html.H3("❌ Erreur inattendue", style={'textAlign': 'center', 'color': 'red', 'padding': '20px'}),
+            html.P(f"Détails: {str(e)}", style={'textAlign': 'center', 'fontSize': '0.9em'})
         ]), f"Erreur inattendue lors de la recherche: {e}", None
 
     # Création de la carte
     try:
-        print(f"\nCreation de la carte...")
+        print(f"\n🗺️ Création de la carte...")
         fig = go.Figure() 
 
         status_msg = ""
         if not found_segments:
-            status_msg = f"Aucun segment avec vent favorable trouvé autour de '{display_address}'. Essayez une autre zone ou revenez plus tard quand les conditions de vent seront différentes."
-            print("Aucun segment avec vent favorable")
+            status_msg = f"😔 Aucun segment avec vent favorable trouvé autour de '{display_address}'. Essayez une autre zone ou revenez plus tard quand les conditions de vent seront différentes."
+            print("😔 Aucun segment avec vent favorable")
             
             fig.add_trace(go.Scattermapbox(
                 lat=[search_lat], lon=[search_lon], mode='markers',
@@ -962,7 +1108,7 @@ def search_and_display_segments(n_clicks, address_input_value, selected_suggesti
                 html.P("💡 Conseil: Cliquez sur un segment coloré de la carte pour accéder directement à sa page Strava.", 
                        style={'margin': '5px 0 0 0', 'fontSize': '0.9em', 'fontStyle': 'italic', 'color': '#6B7280'})
             ])
-            print(f"Ajout de {len(found_segments)} segment(s) a la carte...")
+            print(f"🏁 Ajout de {len(found_segments)} segment(s) à la carte...")
             
             all_segment_lats = []
             all_segment_lons = []
@@ -975,7 +1121,7 @@ def search_and_display_segments(n_clicks, address_input_value, selected_suggesti
                         lons = [coord[1] for coord in coords if coord[1] is not None]
                         
                         if len(lats) >= 2 and len(lons) >= 2:
-                            print(f"  Segment {i+1}: '{segment['name']}' - {len(lats)} points valides")
+                            print(f"  ✅ Segment {i+1}: '{segment['name']}' - {len(lats)} points valides")
                             
                             all_segment_lats.extend(lats)
                             all_segment_lons.extend(lons)
@@ -999,13 +1145,13 @@ def search_and_display_segments(n_clicks, address_input_value, selected_suggesti
                                     'segment_name': segment['name']
                                 }] * len(lats)
                             ))
-                            print(f"    Segment ajoute avec succes et interaction configuree")
+                            print(f"    ✅ Segment ajouté avec succès et interaction configurée")
                         else:
-                            print(f"  Segment {i+1}: '{segment['name']}' - coordonnees invalides")
+                            print(f"  ⚠️ Segment {i+1}: '{segment['name']}' - coordonnées invalides")
                     else:
-                        print(f"  Segment {i+1}: '{segment.get('name')}' sans coordonnees ou trop court")
+                        print(f"  ⚠️ Segment {i+1}: '{segment.get('name')}' sans coordonnées ou trop court")
                 except Exception as segment_error:
-                    print(f"  Erreur ajout segment {i+1}: {segment_error}")
+                    print(f"  ❌ Erreur ajout segment {i+1}: {segment_error}")
 
             if all_segment_lats and all_segment_lons:
                 center_lat = sum(all_segment_lats) / len(all_segment_lats)
@@ -1016,7 +1162,7 @@ def search_and_display_segments(n_clicks, address_input_value, selected_suggesti
                 max_range = max(lat_range, lon_range)
                 max_range_with_margin = max_range * 1.4
                 
-                print(f"Centre calcule: ({center_lat:.6f}, {center_lon:.6f})")
+                print(f"📍 Centre calculé: ({center_lat:.6f}, {center_lon:.6f})")
                 
                 if max_range_with_margin < 0.002:
                     zoom_level = 15
@@ -1033,12 +1179,12 @@ def search_and_display_segments(n_clicks, address_input_value, selected_suggesti
                 else:
                     zoom_level = 9
                     
-                print(f"Zoom calculé: {zoom_level}")
+                print(f"🔍 Zoom calculé: {zoom_level}")
                     
             else:
                 center_lat, center_lon = search_lat, search_lon
                 zoom_level = 14
-                print("Fallback: utilisation des coordonnees de recherche")
+                print("🔄 Fallback: utilisation des coordonnées de recherche")
 
         fig.update_layout(
             mapbox_style="streets", 
@@ -1052,7 +1198,7 @@ def search_and_display_segments(n_clicks, address_input_value, selected_suggesti
             uirevision=f'map_results_{search_lat}_{search_lon}'
         )
         
-        print(f"=== FIN RECHERCHE DE SEGMENTS ===\n")
+        print(f"=== 🏁 FIN RECHERCHE DE SEGMENTS ===\n")
         
         map_component = dcc.Graph(
             id='segments-map',
@@ -1070,9 +1216,9 @@ def search_and_display_segments(n_clicks, address_input_value, selected_suggesti
         return map_component, status_msg, None
         
     except Exception as e:
-        print(f"Erreur lors de la creation de la carte: {e}")
+        print(f"❌ Erreur lors de la création de la carte: {e}")
         return html.Div([
-            html.H3("Erreur d'affichage", style={'textAlign': 'center', 'color': 'red', 'padding': '20px'}),
+            html.H3("❌ Erreur d'affichage", style={'textAlign': 'center', 'color': 'red', 'padding': '20px'}),
             html.P(f"Détails: {e}", style={'textAlign': 'center', 'fontSize': '0.9em'})
         ]), f"Erreur lors de l'affichage des résultats: {e}", None
 
@@ -1091,6 +1237,7 @@ def search_and_display_segments(n_clicks, address_input_value, selected_suggesti
     prevent_initial_call=True
 )
 def load_activities(load_clicks, load_more_clicks, current_activities, current_page):
+    """Charge les activités vélo avec la nouvelle logique améliorée"""
     global current_strava_access_token
     
     ctx = callback_context
@@ -1099,51 +1246,69 @@ def load_activities(load_clicks, load_more_clicks, current_activities, current_p
     
     trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
     
+    # Vérifier le token directement depuis la variable globale
     if not current_strava_access_token:
         return [], [], True, "Token Strava manquant. Veuillez vous connecter.", True, 1
     
-    # Déterminer la page à charger
-    if trigger_id == 'load-activities-button':
-        page_to_load = 1
-        activities_to_keep = []
-    else:
-        page_to_load = current_page + 1
-        activities_to_keep = current_activities
-    
-    # Récupérer les nouvelles activités
-    new_activities, error = fetch_strava_activities(current_strava_access_token, page=page_to_load)
-    
-    if error:
-        return current_activities, [], True, error, True, current_page
-    
-    # Combiner les activités
-    all_activities = activities_to_keep + new_activities
-    
-    if not all_activities:
-        return [], [], True, "Aucune activité vélo trouvée.", True, 1
-    
-    # Créer les options pour le dropdown
-    options = []
-    for activity in all_activities:
-        label = format_activity_for_dropdown(activity)
-        options.append({'label': label, 'value': activity['id']})
-    
-    # Messages de statut
-    if trigger_id == 'load-activities-button':
-        status_message = f"📊 {len(all_activities)} activités vélo chargées"
-    else:
-        status_message = f"📊 {len(all_activities)} activités vélo au total (+{len(new_activities)} ajoutées)"
-    
-    # Déterminer si on peut charger plus
-    can_load_more = len(new_activities) >= ACTIVITIES_PER_LOAD
-    
-    return all_activities, options, False, status_message, not can_load_more, page_to_load
+    try:
+        if trigger_id == 'load-activities-button':
+            # Première charge - utiliser la nouvelle fonction
+            print("=== 📥 CHARGEMENT INITIAL DES ACTIVITÉS VÉLO ===")
+            cycling_activities, error = fetch_cycling_activities_until_target(
+                current_strava_access_token, 
+                target_count=ACTIVITIES_PER_LOAD
+            )
+            
+            if error:
+                return [], [], True, error, True, 1
+            
+            if not cycling_activities:
+                return [], [], True, "Aucune activité vélo trouvée.", True, 1
+            
+            status_message = f"📊 {len(cycling_activities)} activités vélo chargées"
+            can_load_more = len(cycling_activities) >= ACTIVITIES_PER_LOAD
+            
+        else:  # load-more-activities-button
+            # Chargement supplémentaire
+            print("=== 📥 CHARGEMENT D'ACTIVITÉS SUPPLÉMENTAIRES ===")
+            new_activities, error = fetch_more_cycling_activities(
+                current_strava_access_token,
+                current_activities,
+                additional_count=ACTIVITIES_PER_LOAD
+            )
+            
+            if error:
+                return current_activities, [], True, error, True, current_page
+            
+            # Combiner les activités
+            cycling_activities = current_activities + new_activities
+            
+            if not new_activities:
+                status_message = f"📊 {len(cycling_activities)} activités vélo au total (aucune nouvelle activité trouvée)"
+                can_load_more = False
+            else:
+                status_message = f"📊 {len(cycling_activities)} activités vélo au total (+{len(new_activities)} ajoutées)"
+                can_load_more = len(new_activities) >= ACTIVITIES_PER_LOAD
+        
+        # Créer les options pour le dropdown
+        options = []
+        for activity in cycling_activities:
+            label = format_activity_for_dropdown(activity)
+            options.append({'label': label, 'value': activity['id']})
+        
+        return cycling_activities, options, False, status_message, not can_load_more, current_page + 1
+        
+    except Exception as e:
+        error_msg = f"Erreur lors du chargement des activités: {e}"
+        print(f"❌ {error_msg}")
+        return current_activities, [], True, error_msg, True, current_page
 
 @app.callback(
     Output('analyze-activity-button', 'disabled'),
     Input('activities-dropdown', 'value')
 )
 def enable_analyze_button(selected_activity):
+    """Active le bouton d'analyse quand une activité est sélectionnée"""
     return selected_activity is None
 
 @app.callback(
@@ -1157,27 +1322,30 @@ def enable_analyze_button(selected_activity):
     prevent_initial_call=True
 )
 def analyze_selected_activity(n_clicks, selected_activity_id, activities_data, fc_max, ftp, weight):
+    """Analyse l'activité sélectionnée avec gestion des KOM"""
     global current_strava_access_token
     
     if n_clicks == 0 or not selected_activity_id:
         return html.Div("Sélectionnez une activité à analyser", style={'textAlign': 'center', 'color': '#666', 'padding': '20px'})
     
+    # Vérifications des prérequis
     if not current_strava_access_token:
         return html.Div([
-            html.H3("Token Strava manquant", style={'color': 'red', 'textAlign': 'center'}),
+            html.H3("🔒 Token Strava manquant", style={'color': 'red', 'textAlign': 'center'}),
             html.P("Veuillez vous connecter avec Strava en utilisant le bouton de connexion en haut de la page.")
         ])
     
     if not OPENAI_API_KEY:
         return html.Div([
-            html.H3("Configuration manquante", style={'color': 'red', 'textAlign': 'center'}),
+            html.H3("⚙️ Configuration manquante", style={'color': 'red', 'textAlign': 'center'}),
             html.P("La clé API OpenAI n'est pas configurée. Veuillez l'ajouter à votre fichier .env")
         ])
     
     if not STRAVA_ANALYZER_AVAILABLE:
         return html.Div([
-            html.H3("Module d'analyse non disponible", style={'color': 'red', 'textAlign': 'center'}),
-            html.P("Le module strava_analyzer n'a pas pu être importé.")
+            html.H3("🔧 Module d'analyse non disponible", style={'color': 'red', 'textAlign': 'center'}),
+            html.P("Le module strava_analyzer n'a pas pu être importé."),
+            html.P("Vérifiez que le fichier strava_analyzer.py est présent et que toutes les dépendances sont installées.", style={'fontSize': '0.9em', 'color': '#666'})
         ])
     
     # Trouver l'activité sélectionnée dans les données de base
@@ -1191,8 +1359,84 @@ def analyze_selected_activity(n_clicks, selected_activity_id, activities_data, f
         return html.Div("Activité non trouvée", style={'textAlign': 'center', 'color': 'red'})
     
     try:
-        print(f"\n=== DEBUT ANALYSE ACTIVITÉ {selected_activity_id} ===")
+        print(f"\n=== 🔍 DEBUT ANALYSE ACTIVITÉ {selected_activity_id} ===")
         print(f"Activité: {selected_activity_basic.get('name', 'Sans nom')}")
+        
+        # Récupérer les détails complets de l'activité avec les efforts de segments
+        print("📊 Récupération des détails complets de l'activité avec efforts de segments...")
+        selected_activity_complete = strava_analyzer.get_activity_details_with_efforts(
+            selected_activity_id, current_strava_access_token
+        )
+        
+        if not selected_activity_complete:
+            return html.Div([
+                html.H3("❌ Erreur de récupération", style={'color': 'red', 'textAlign': 'center'}),
+                html.P("Impossible de récupérer les détails complets de l'activité depuis Strava.")
+            ])
+        
+        # Chercher les KOM dans les efforts de segments
+        kom_segments = []
+        pr_segments = []
+        top_segments = []
+        
+        if selected_activity_complete.get('segment_efforts'):
+            for effort in selected_activity_complete['segment_efforts']:
+                segment_name = effort.get('segment', {}).get('name', 'Segment inconnu')
+                kom_rank = effort.get('kom_rank')
+                pr_rank = effort.get('pr_rank')
+                
+                if kom_rank == 1:
+                    kom_segments.append(segment_name)
+                if pr_rank == 1:
+                    pr_segments.append(segment_name)
+                if kom_rank and kom_rank <= 10:
+                    top_segments.append((segment_name, kom_rank))
+        
+        # Afficher d'abord les félicitations pour les KOM/PR si il y en a
+        congratulations_content = []
+        
+        if kom_segments:
+            congratulations_content.extend([
+                html.Div([
+                    html.H2("🏆 BRAVO ! NOUVEAU KOM ! 👑", 
+                           style={'color': '#FFD700', 'textAlign': 'center', 'marginBottom': '10px', 
+                                  'fontSize': '2em', 'fontWeight': 'bold', 'textShadow': '2px 2px 4px rgba(0,0,0,0.5)'}),
+                    html.Div([
+                        html.Span("Félicitations ! Tu viens de décrocher le KOM sur ", style={'fontSize': '1.2em'}),
+                        html.Span(f"{len(kom_segments)} segment{'s' if len(kom_segments) > 1 else ''} :", 
+                                 style={'fontSize': '1.2em', 'fontWeight': 'bold', 'color': '#FFD700'}),
+                    ], style={'textAlign': 'center', 'marginBottom': '15px'}),
+                    html.Ul([
+                        html.Li([
+                            html.Span("👑 ", style={'fontSize': '1.5em'}),
+                            html.Span(segment_name, style={'fontWeight': 'bold', 'fontSize': '1.1em'})
+                        ]) for segment_name in kom_segments
+                    ], style={'listStyle': 'none', 'textAlign': 'center', 'fontSize': '1.1em'}),
+                    html.P("Tu es maintenant le roi de la montagne sur ce segment ! Un exploit à célébrer !",
+                           style={'textAlign': 'center', 'fontStyle': 'italic', 'color': '#4A5568', 'marginTop': '15px'})
+                ], style={'backgroundColor': '#FFF8E7', 'padding': '20px', 'borderRadius': '15px', 
+                         'border': '3px solid #FFD700', 'marginBottom': '25px', 'boxShadow': '0 4px 15px rgba(255,215,0,0.3)'})
+            ])
+        
+        if pr_segments:
+            congratulations_content.append(
+                html.Div([
+                    html.H3("🥇 Records Personnels établis !", 
+                           style={'color': '#38A169', 'textAlign': 'center', 'marginBottom': '10px'}),
+                    html.Ul([
+                        html.Li([
+                            html.Span("🏆 ", style={'fontSize': '1.3em'}),
+                            html.Span(segment_name, style={'fontWeight': 'bold'})
+                        ]) for segment_name in pr_segments
+                    ], style={'listStyle': 'none', 'textAlign': 'center'}),
+                    html.P("Tu as battu tes propres records ! Continue comme ça !",
+                           style={'textAlign': 'center', 'fontStyle': 'italic', 'color': '#4A5568'})
+                ], style={'backgroundColor': '#F0FFF4', 'padding': '15px', 'borderRadius': '10px', 
+                         'border': '2px solid #38A169', 'marginBottom': '20px'})
+            )
+        
+        print(f"🏆 KOM trouvés: {len(kom_segments)}, PR trouvés: {len(pr_segments)}")
+        print(f"⚙️ FC Max: {fc_max}, FTP: {ftp}, Poids: {weight}")
         
         # Appeler la fonction d'analyse avec les détails complets
         analysis_result = strava_analyzer.generate_activity_report_with_overall_summary(
@@ -1207,25 +1451,55 @@ def analyze_selected_activity(n_clicks, selected_activity_id, activities_data, f
             num_best_segments_to_analyze=2
         )
         
-        print(f"=== ANALYSE TERMINÉE ===\n")
+        print(f"=== ✅ ANALYSE TERMINÉE ===\n")
         
         # Construire l'affichage du résultat
-        content_children = []
+        content_children = congratulations_content.copy()  # Commencer par les félicitations
         
-        # Titre de l'activité
+        # Titre de l'activité avec informations de base
+        activity_info = []
+        if selected_activity_complete.get('distance'):
+            activity_info.append(f"Distance: {round(selected_activity_complete['distance'] / 1000, 1)}km")
+        if selected_activity_complete.get('total_elevation_gain'):
+            activity_info.append(f"D+: {selected_activity_complete['total_elevation_gain']}m")
+        if selected_activity_complete.get('moving_time'):
+            duration_hours = selected_activity_complete['moving_time'] // 3600
+            duration_minutes = (selected_activity_complete['moving_time'] % 3600) // 60
+            activity_info.append(f"Durée: {duration_hours}h{duration_minutes:02d}min")
+        
         content_children.append(
-            html.H2(analysis_result['activity_name'], style={
-                'color': '#1a202c', 'marginBottom': '20px', 'textAlign': 'center'
-            })
+            html.Div([
+                html.H2(analysis_result['activity_name'], 
+                       style={'color': '#1a202c', 'marginBottom': '5px', 'textAlign': 'center'}),
+                html.P(" | ".join(activity_info), 
+                       style={'color': '#666', 'textAlign': 'center', 'marginBottom': '20px'})
+            ])
         )
+        
+        # Afficher la description si elle existe
+        if selected_activity_complete.get('description'):
+            content_children.append(
+                html.Div([
+                    html.H4("📝 Description de la sortie", style={'color': '#4A5568', 'marginBottom': '10px'}),
+                    html.Div(
+                        selected_activity_complete['description'],
+                        style={
+                            'backgroundColor': '#EDF2F7', 
+                            'padding': '12px', 
+                            'borderRadius': '6px',
+                            'marginBottom': '20px',
+                            'fontStyle': 'italic',
+                            'borderLeft': '3px solid #CBD5E0'
+                        }
+                    )
+                ])
+            )
         
         # Résumé global
         if analysis_result['overall_summary']:
             content_children.append(
                 html.Div([
-                    html.H3("Résumé de la sortie", style={
-                        'color': '#2d3748', 'borderBottom': '2px solid #3182CE', 'paddingBottom': '5px'
-                    }),
+                    html.H3("📊 Résumé de la sortie", style={'color': '#2d3748', 'borderBottom': '2px solid #3182CE', 'paddingBottom': '5px'}),
                     html.Div(
                         analysis_result['overall_summary'],
                         style={
@@ -1240,20 +1514,50 @@ def analyze_selected_activity(n_clicks, selected_activity_id, activities_data, f
                 ])
             )
         
-        # Analyses des segments
+        # Analyses des segments avec classements formatés
         if analysis_result['segment_reports']:
             content_children.append(
-                html.H3("Analyses détaillées des segments les plus performants", style={
-                    'color': '#2d3748', 'borderBottom': '2px solid #38A169', 'paddingBottom': '5px', 'marginBottom': '20px'
-                })
+                html.H3("🎯 Analyses détaillées des segments les plus performants", 
+                    style={'color': '#2d3748', 'borderBottom': '2px solid #38A169', 'paddingBottom': '5px', 'marginBottom': '20px'})
             )
             
-            for segment_report in analysis_result['segment_reports']:
+            for i, segment_report in enumerate(analysis_result['segment_reports']):
+                segment_name = segment_report['segment_name']
+                
+                # Récupérer les informations de classement depuis les données complètes
+                segment_ranking_display = ""
+                try:
+                    if selected_activity_complete.get('segment_efforts'):
+                        for effort in selected_activity_complete['segment_efforts']:
+                            if effort.get('segment', {}).get('name') == segment_name:
+                                kom_rank = effort.get('kom_rank')
+                                pr_rank = effort.get('pr_rank')
+                                
+                                ranking_parts = []
+                                if pr_rank == 1:
+                                    ranking_parts.append("🥇 Record Personnel")
+                                if kom_rank:
+                                    if kom_rank == 1:
+                                        ranking_parts.append("👑 KOM!")
+                                    elif kom_rank <= 3:
+                                        ranking_parts.append(f"🥉 Top {kom_rank}")
+                                    elif kom_rank <= 10:
+                                        ranking_parts.append(f"🏆 Top {kom_rank}")
+                                    else:
+                                        ranking_parts.append(f"#{kom_rank}")
+                                
+                                if ranking_parts:
+                                    segment_ranking_display = f" - {' | '.join(ranking_parts)}"
+                                break
+                except Exception as e:
+                    print(f"❌ Erreur lors de la récupération du classement pour {segment_name}: {e}")
+                
+                segment_header = f"{segment_name}{segment_ranking_display}"
+                
                 content_children.append(
                     html.Div([
-                        html.H4(segment_report['segment_name'], style={
-                            'color': '#38A169', 'marginBottom': '10px'
-                        }),
+                        html.H4(segment_header, 
+                            style={'color': '#38A169', 'marginBottom': '10px'}),
                         html.Div(
                             segment_report['report'],
                             style={
@@ -1271,10 +1575,10 @@ def analyze_selected_activity(n_clicks, selected_activity_id, activities_data, f
         else:
             content_children.append(
                 html.Div([
-                    html.Div("Aucun segment notable détecté", style={'fontSize': '1.2em', 'marginBottom': '10px'}),
+                    html.Div("😊 Aucun segment notable détecté", style={'fontSize': '1.2em', 'marginBottom': '10px'}),
                     html.P("Cette activité ne contient pas de records personnels ou de top 10 sur des segments.", 
                            style={'fontStyle': 'italic', 'color': '#666'}),
-                    html.P("Astuce: Les analyses se concentrent sur vos meilleures performances pour vous aider à progresser !", 
+                    html.P("💡 Astuce: Les analyses se concentrent sur vos meilleures performances pour vous aider à progresser !", 
                            style={'color': '#3182CE', 'fontWeight': 'bold'})
                 ], style={'textAlign': 'center', 'padding': '30px', 'backgroundColor': '#F7FAFC', 'borderRadius': '8px'})
             )
@@ -1282,13 +1586,65 @@ def analyze_selected_activity(n_clicks, selected_activity_id, activities_data, f
         return html.Div(content_children)
         
     except Exception as e:
-        print(f"ERREUR lors de l'analyse: {e}")
+        print(f"❌ ERREUR lors de l'analyse: {e}")
         return html.Div([
-            html.H3("Erreur lors de l'analyse", style={'color': 'red', 'textAlign': 'center'}),
+            html.H3("❌ Erreur lors de l'analyse", style={'color': 'red', 'textAlign': 'center'}),
             html.P(f"Détails: {str(e)}", style={'color': '#666', 'textAlign': 'center'}),
             html.P("Essayez de recharger la page ou vérifiez votre connexion Strava.", 
                    style={'color': '#3182CE', 'textAlign': 'center', 'fontStyle': 'italic'})
         ])
+
+# === CALLBACK POUR L'INTERACTION STRAVA (segments) ===
+@app.callback(
+    Output('search-status-message', 'children', allow_duplicate=True),
+    Input('segments-map', 'clickData'),
+    prevent_initial_call=True
+)
+def handle_segment_click(click_data):
+    """Gère les clics sur les segments de la carte pour ouvrir Strava"""
+    if not click_data or 'points' not in click_data or not click_data['points']:
+        return dash.no_update
+    
+    try:
+        point_data = click_data['points'][0]
+        if 'customdata' in point_data and isinstance(point_data['customdata'], dict):
+            segment_name = point_data['customdata'].get('segment_name', 'ce segment')
+            strava_url = point_data['customdata'].get('strava_url')
+            
+            if strava_url:
+                return html.Div([
+                    html.P(f"🚴 Segment sélectionné: {segment_name}", 
+                           style={'fontWeight': 'bold', 'color': '#10B981', 'margin': '5px 0'}),
+                    html.A(
+                        [
+                            html.Span("🔗 ", style={'fontSize': '1.2em'}),
+                            html.Span("CLIQUEZ ICI POUR VOIR CE SEGMENT SUR STRAVA", 
+                                    style={'textDecoration': 'underline', 'fontWeight': 'bold'})
+                        ],
+                        href=strava_url,
+                        target="_blank",
+                        style={
+                            'display': 'inline-block',
+                            'padding': '10px 15px',
+                            'backgroundColor': '#FC4C02',
+                            'color': 'white',
+                            'borderRadius': '8px',
+                            'textDecoration': 'none',
+                            'fontSize': '1.1em',
+                            'fontWeight': 'bold',
+                            'transition': 'all 0.3s ease',
+                            'border': '2px solid #FC4C02'
+                        }
+                    ),
+                    html.P("💡 Conseil: Vous pouvez aussi cliquer sur d'autres segments colorés de la carte", 
+                           style={'fontSize': '0.85em', 'color': '#6B7280', 'margin': '8px 0 0 0', 'fontStyle': 'italic'})
+                ], style={'textAlign': 'center', 'padding': '10px'})
+        
+        return dash.no_update
+        
+    except Exception as e:
+        print(f"❌ Erreur lors du traitement du clic sur segment: {e}")
+        return dash.no_update
 
 print("✅ Tous les callbacks définis")
 
@@ -1296,6 +1652,9 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8050))
     debug_mode = os.environ.get('RENDER') is None
     
+    required_keys = [MAPBOX_ACCESS_TOKEN, STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET, WEATHER_API_KEY]
+    if not all(required_keys):
+        print("❌ ERREUR CRITIQUE: Une ou plusieurs clés/ID API sont manquants.")
     print(f"\n🚀 LANCEMENT KOM HUNTERS")
     print(f"🌐 Mode: {'Développement' if debug_mode else 'Production'}")
     print(f"🔗 URL: {BASE_URL}")
