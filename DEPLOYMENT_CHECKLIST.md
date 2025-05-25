@@ -9,6 +9,7 @@
 ### 2. Additional dependencies added
 - Added `langchain-community==0.3.18` for full langchain support
 - Fixed OpenAI version conflict: Changed from `openai==1.54.3` to `openai>=1.68.2,<2.0.0` to be compatible with `langchain-openai 0.3.18`
+- Fixed langchain version conflict: Changed from `langchain==0.3.18` to `langchain>=0.3.19,<1.0.0` to be compatible with `langchain-community 0.3.18`
 
 ## 📋 Current requirements.txt
 ```
@@ -18,7 +19,7 @@ requests==2.31.0
 python-dotenv==1.0.0
 polyline==2.0.0
 geopy==2.4.0
-langchain==0.3.18
+langchain>=0.3.19,<1.0.0
 langchain-openai==0.3.18
 langchain-core==0.3.61
 langchain-community==0.3.18
