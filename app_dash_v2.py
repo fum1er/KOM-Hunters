@@ -22,7 +22,7 @@ except ImportError:
     GEOPY_AVAILABLE = False
     print("⚠️ geopy non disponible - fonctionnalité de géocodage limitée")
 
-print("🚀 KOM HUNTERS V2 - VERSION SIMPLIFIÉE")
+print("🚀 KOM HUNTERS V2 - VERSION PUBLIQUE (SANS AUTHENTIFICATION)")
 
 # --- AJOUT POUR S'ASSURER QUE LE RÉPERTOIRE ACTUEL EST DANS SYS.PATH ---
 import sys
@@ -46,20 +46,7 @@ MAPBOX_ACCESS_TOKEN = os.getenv('MAPBOX_ACCESS_TOKEN', '')
 STRAVA_CLIENT_ID = os.getenv('STRAVA_CLIENT_ID', '')
 STRAVA_CLIENT_SECRET = os.getenv('STRAVA_CLIENT_SECRET', '')
 WEATHER_API_KEY = os.getenv('OPENWEATHERMAP_API_KEY', '')
-
-# Configuration URL dynamique pour render.com
-if os.getenv('RENDER'):
-    BASE_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'kom-hunters-v2.onrender.com')}"
-else:
-    BASE_URL = 'http://localhost:8050'
-
-STRAVA_REDIRECT_URI = f'{BASE_URL}/strava_callback'
-# SCOPE SIMPLIFIÉ - Seulement lecture publique
-STRAVA_SCOPES = 'read'
-
-print(f"🌐 BASE_URL: {BASE_URL}")
-print(f"🔄 STRAVA_REDIRECT_URI: {STRAVA_REDIRECT_URI}")
-print(f"🔐 STRAVA_SCOPES: {STRAVA_SCOPES} (lecture publique uniquement)")
+SECRET_KEY = os.getenv('SECRET_KEY', '')
 
 # Configuration pour la recherche
 SEARCH_RADIUS_KM = 10
@@ -70,6 +57,7 @@ print(f"  - Mapbox: {'✅' if MAPBOX_ACCESS_TOKEN else '❌'}")
 print(f"  - Strava ID: {'✅' if STRAVA_CLIENT_ID else '❌'}")
 print(f"  - Strava Secret: {'✅' if STRAVA_CLIENT_SECRET else '❌'}")
 print(f"  - Weather: {'✅' if WEATHER_API_KEY else '❌'}")
+print(f"  - Secret Key: {'✅' if SECRET_KEY else '❌'}")
 print(f"  - Geopy: {'✅' if GEOPY_AVAILABLE else '❌'}")
 print(f"  - Strava Analyzer: {'✅' if STRAVA_ANALYZER_AVAILABLE else '❌'}")
 
@@ -79,109 +67,64 @@ app.title = "KOM Hunters V2 - Segments avec Vent Favorable"
 app.config.suppress_callback_exceptions = True
 server = app.server
 
-# === CONFIGURATION SÉCURISÉE DES SESSIONS ===
-SECRET_KEY = os.getenv('SECRET_KEY')
-if not SECRET_KEY:
-    SECRET_KEY = secrets.token_hex(32)
-    print("⚠️ ATTENTION: Clé secrète générée automatiquement. Définissez SECRET_KEY dans vos variables d'environnement pour la production.")
+# === GESTION DU TOKEN STRAVA POUR L'APPLICATION ===
+APP_STRAVA_TOKEN = None
+TOKEN_EXPIRES_AT = None
 
-server.secret_key = SECRET_KEY
-
-# Configuration des sessions sécurisées
-server.config.update(
-    SESSION_COOKIE_SECURE=True if os.getenv('RENDER') else False,
-    SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE='Lax',
-    PERMANENT_SESSION_LIFETIME=timedelta(hours=24),
-)
-
-# === FONCTIONS DE GESTION DES SESSIONS SIMPLIFIÉES ===
-
-def get_session_id():
-    """Génère un ID de session unique"""
+def get_app_strava_token():
+    """
+    Récupère un token d'accès pour l'application en utilisant le Client Credentials Flow
+    Ce token permet d'accéder aux données publiques sans authentification utilisateur
+    """
+    global APP_STRAVA_TOKEN, TOKEN_EXPIRES_AT
+    
+    # Vérifier si on a déjà un token valide
+    if APP_STRAVA_TOKEN and TOKEN_EXPIRES_AT and time.time() < TOKEN_EXPIRES_AT:
+        return APP_STRAVA_TOKEN
+    
+    print("🔑 Récupération d'un nouveau token d'application Strava...")
+    
+    if not STRAVA_CLIENT_ID or not STRAVA_CLIENT_SECRET:
+        print("❌ Configuration Strava manquante (CLIENT_ID ou CLIENT_SECRET)")
+        return None
+    
     try:
-        client_ip = get_client_ip()
-        user_agent = request.headers.get('User-Agent', 'unknown')
-        session_data = f"{client_ip}:{user_agent}:{time.time()}"
-        return hashlib.sha256(session_data.encode()).hexdigest()[:16]
-    except:
-        return secrets.token_hex(8)
-
-def init_user_session():
-    """Initialise une nouvelle session utilisateur"""
-    if 'session_id' not in session:
-        session['session_id'] = get_session_id()
-        session['created_at'] = time.time()
-        session.permanent = True
-        print(f"🔐 Nouvelle session créée: {session['session_id']}")
-
-def get_user_strava_token():
-    """Récupère le token Strava de l'utilisateur actuel"""
-    if 'strava_access_token' in session:
-        if 'token_expires_at' in session:
-            if time.time() < session['token_expires_at']:
-                return session['strava_access_token']
-            else:
-                clear_user_strava_session()
-                return None
-        return session['strava_access_token']
-    return None
-
-def set_user_strava_token(access_token, refresh_token=None, expires_at=None):
-    """Stocke les tokens Strava pour l'utilisateur actuel"""
-    init_user_session()
-    session['strava_access_token'] = access_token
-    if refresh_token:
-        session['strava_refresh_token'] = refresh_token
-    if expires_at:
-        session['token_expires_at'] = expires_at
-    session['token_created_at'] = time.time()
-    print(f"🔑 Token Strava stocké pour session: {session['session_id']}")
-
-def clear_user_strava_session():
-    """Efface les données Strava de l'utilisateur actuel"""
-    session_id = session.get('session_id', 'unknown')
-    keys_to_remove = [
-        'strava_access_token', 
-        'strava_refresh_token', 
-        'token_expires_at', 
-        'token_created_at'
-    ]
-    for key in keys_to_remove:
-        session.pop(key, None)
-    print(f"🗑️ Session Strava effacée pour: {session_id}")
-
-def is_user_authenticated():
-    """Vérifie si l'utilisateur actuel est authentifié"""
-    token = get_user_strava_token()
-    return bool(token and len(token.strip()) > 20)
-
-def get_user_session_info():
-    """Récupère les informations de session de l'utilisateur"""
-    if not is_user_authenticated():
-        return "Cliquez sur 'Se connecter avec Strava' pour rechercher des segments."
-    
-    token = get_user_strava_token()
-    expires_at = session.get('token_expires_at')
-    created_at = session.get('token_created_at')
-    
-    info_parts = [
-        f"🎉 CONNEXION RÉUSSIE !",
-        f"Token d'Accès: ...{token[-6:] if token else 'ERREUR'}",
-        f"Session: {session.get('session_id', 'unknown')[:8]}..."
-    ]
-    
-    if expires_at:
-        expire_date = datetime.utcfromtimestamp(expires_at).strftime('%Y-%m-%d %H:%M:%S')
-        info_parts.append(f"Expire à (UTC): {expire_date}")
-    
-    if created_at:
-        time_since = int(time.time() - created_at)
-        info_parts.append(f"Connecté depuis: {time_since//60}min")
-    
-    info_parts.append("✅ Accès lecture seule aux segments publics")
-    
-    return "\n".join(info_parts)
+        # Utiliser le Client Credentials Flow pour obtenir un token d'application
+        token_url = 'https://www.strava.com/oauth/token'
+        
+        payload = {
+            'client_id': STRAVA_CLIENT_ID,
+            'client_secret': STRAVA_CLIENT_SECRET,
+            'grant_type': 'client_credentials'
+        }
+        
+        response = requests.post(token_url, data=payload, timeout=15)
+        response.raise_for_status()
+        token_data = response.json()
+        
+        access_token = token_data.get('access_token')
+        expires_at = token_data.get('expires_at')
+        
+        if access_token:
+            APP_STRAVA_TOKEN = access_token
+            TOKEN_EXPIRES_AT = expires_at
+            print(f"✅ Token d'application Strava obtenu: ...{access_token[-6:]}")
+            if expires_at:
+                expire_date = datetime.utcfromtimestamp(expires_at).strftime('%Y-%m-%d %H:%M:%S')
+                print(f"🕒 Token expire le: {expire_date} UTC")
+            return access_token
+        else:
+            print("❌ Aucun token d'accès reçu dans la réponse")
+            return None
+            
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Erreur lors de la récupération du token d'application: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"📨 Détails de l'erreur: {e.response.text}")
+        return None
+    except Exception as e:
+        print(f"❌ Erreur inattendue lors de la récupération du token: {e}")
+        return None
 
 def get_client_ip():
     """Récupère l'adresse IP du client de manière sécurisée"""
@@ -198,188 +141,6 @@ def get_client_ip():
         print(f"❌ Erreur lors de la récupération de l'IP: {e}")
         return '127.0.0.1'
 
-# --- Fonction pour charger et encoder le logo Strava ---
-def get_strava_logo_base64():
-    """Charge et encode le logo Strava en base64"""
-    logo_path = os.path.join(current_script_directory, 'logo_strava.png')
-    try:
-        with open(logo_path, 'rb') as f:
-            logo_data = f.read()
-            logo_base64 = base64.b64encode(logo_data).decode('utf-8')
-            return f"data:image/png;base64,{logo_base64}"
-    except FileNotFoundError:
-        print(f"⚠️ Logo Strava non trouvé à {logo_path}")
-        return None
-    except Exception as e:
-        print(f"⚠️ Impossible de charger le logo Strava: {e}")
-        return None
-
-# --- Composant du logo Strava avec statut et bouton de connexion ---
-def create_strava_status_component():
-    """Crée le composant du logo Strava avec indicateur de statut et bouton de connexion"""
-    logo_src = get_strava_logo_base64()
-    is_connected = is_user_authenticated()
-    
-    status_color = '#10B981' if is_connected else '#EF4444'
-    status_text = 'Connecté ✓' if is_connected else 'Non connecté'
-    
-    # URL d'authentification Strava avec state pour sécurité CSRF
-    csrf_state = secrets.token_urlsafe(32)
-    session['oauth_state'] = csrf_state
-    
-    auth_url = (
-        f"https://www.strava.com/oauth/authorize?"
-        f"client_id={STRAVA_CLIENT_ID}"
-        f"&redirect_uri={STRAVA_REDIRECT_URI}"
-        f"&response_type=code"
-        f"&approval_prompt=force"  
-        f"&scope={STRAVA_SCOPES}"
-        f"&state={csrf_state}"
-    )
-    
-    # Contenu du composant
-    component_children = []
-    
-    # Logo Strava
-    if logo_src:
-        component_children.append(
-            html.Img(
-                src=logo_src,
-                style={
-                    'height': '40px',
-                    'width': 'auto',
-                    'marginBottom': '6px'
-                }
-            )
-        )
-    else:
-        component_children.append(
-            html.Div("STRAVA", style={
-                'fontSize': '1rem',
-                'fontWeight': 'bold',
-                'color': '#FC4C02',
-                'marginBottom': '6px'
-            })
-        )
-    
-    # Indicateur de statut
-    status_children = [
-        html.Div(
-            style={
-                'width': '12px',
-                'height': '12px',
-                'borderRadius': '50%',
-                'backgroundColor': status_color,
-                'marginRight': '6px'
-            }
-        ),
-        html.Span(
-            status_text,
-            style={
-                'fontSize': '0.75rem',
-                'color': '#E2E8F0',
-                'fontWeight': '500'
-            }
-        )
-    ]
-    
-    if is_connected:
-        session_id = session.get('session_id', 'unknown')
-        status_children.append(
-            html.Span(
-                f" (Session: {session_id[:6]}...)",
-                style={
-                    'fontSize': '0.65rem',
-                    'color': '#A0AEC0',
-                    'fontStyle': 'italic'
-                }
-            )
-        )
-    
-    component_children.append(
-        html.Div(status_children, style={
-            'display': 'flex',
-            'alignItems': 'center',
-            'marginBottom': '8px' if not is_connected else '4px'
-        })
-    )
-    
-    # Bouton de connexion si pas connecté
-    if not is_connected:
-        component_children.append(
-            html.A(
-                html.Div([
-                    html.Span("🔗", style={'marginRight': '4px', 'fontSize': '0.9rem'}),
-                    html.Span("Se connecter", style={'fontSize': '0.75rem', 'fontWeight': '600'})
-                ], style={
-                    'display': 'flex',
-                    'alignItems': 'center',
-                    'justifyContent': 'center'
-                }),
-                href=auth_url,
-                style={
-                    'display': 'block',
-                    'padding': '6px 12px',
-                    'backgroundColor': '#FC4C02',
-                    'color': 'white',
-                    'textDecoration': 'none',
-                    'borderRadius': '6px',
-                    'fontSize': '0.75rem',
-                    'fontWeight': '600',
-                    'transition': 'all 0.3s ease',
-                    'boxShadow': '0 2px 8px rgba(252, 76, 2, 0.3)',
-                    'border': '1px solid #FC4C02',
-                    'cursor': 'pointer'
-                }
-            )
-        )
-    else:
-        # Si connecté, afficher bouton de déconnexion
-        component_children.extend([
-            html.Div("🎉 Connecté !", style={
-                'fontSize': '0.7rem',
-                'color': '#68D391',
-                'fontWeight': '500',
-                'textAlign': 'center',
-                'marginTop': '2px'
-            }),
-            html.Button(
-                "🚪 Déconnexion",
-                id='logout-button',
-                n_clicks=0,
-                style={
-                    'padding': '4px 8px',
-                    'backgroundColor': '#EF4444',
-                    'color': 'white',
-                    'border': 'none',
-                    'borderRadius': '4px',
-                    'fontSize': '0.65rem',
-                    'fontWeight': '600',
-                    'cursor': 'pointer',
-                    'marginTop': '4px'
-                }
-            )
-        ])
-    
-    return html.Div(
-        component_children,
-        style={
-            'position': 'absolute',
-            'top': '15px',
-            'right': '20px',
-            'display': 'flex',
-            'flexDirection': 'column',
-            'alignItems': 'center',
-            'zIndex': '1000',
-            'padding': '10px',
-            'backgroundColor': 'rgba(26, 32, 44, 0.85)',
-            'borderRadius': '10px',
-            'backdropFilter': 'blur(10px)',
-            'border': '1px solid rgba(255,255,255,0.1)',
-            'boxShadow': '0 4px 12px rgba(0,0,0,0.3)'
-        }
-    )
-
 # --- Fonctions utilitaires pour les suggestions d'adresses ---
 def get_address_suggestions(query_str, limit=5):
     if not query_str or len(query_str) < 2:
@@ -387,7 +148,7 @@ def get_address_suggestions(query_str, limit=5):
     if not GEOPY_AVAILABLE:
         return [], "Service de géocodage non disponible"
     
-    geolocator = Nominatim(user_agent="kom_hunters_v2_simplified")
+    geolocator = Nominatim(user_agent="kom_hunters_v2_public")
     try:
         locations = geolocator.geocode(query_str, exactly_one=False, limit=limit, timeout=7)
         if locations:
@@ -402,7 +163,7 @@ def geocode_address_directly(address_str):
     if not GEOPY_AVAILABLE:
         return None, "Service de géocodage non disponible", None
     
-    geolocator = Nominatim(user_agent="kom_hunters_v2_simplified")
+    geolocator = Nominatim(user_agent="kom_hunters_v2_public")
     try:
         location = geolocator.geocode(address_str, timeout=10)
         if location:
@@ -462,22 +223,14 @@ app.index_string = '''
             font-weight: 400;
         }
         
-        /* Status des tokens */
-        .token-status {
-            color: #a0aec0;
-            font-size: 0.85rem;
-            margin-bottom: 0.5rem;
-        }
-        
-        .token-info {
+        .app-description {
+            margin: 0 0 1.5rem 0;
+            font-size: 0.9rem;
             color: #68d391;
-            font-size: 0.8rem;
-            white-space: pre-line;
-            background: rgba(104, 211, 145, 0.1);
-            padding: 0.5rem;
-            border-radius: 6px;
-            margin-bottom: 1rem;
-            border-left: 3px solid #68d391;
+            font-style: italic;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
         }
         
         /* Conteneur de recherche */
@@ -581,6 +334,18 @@ app.index_string = '''
             text-align: center;
         }
         
+        /* Info box */
+        .info-box {
+            background-color: #e6fffa;
+            color: #234e52;
+            padding: 1rem;
+            border-radius: 8px;
+            border-left: 4px solid #38b2ac;
+            margin: 1rem auto;
+            max-width: 600px;
+            text-align: center;
+        }
+        
         /* Responsive design */
         @media (max-width: 768px) {
             .app-title {
@@ -618,31 +383,19 @@ app.index_string = '''
 </html>
 '''
 
-# Layout principal simplifié
+# Layout principal simplifié sans authentification
 def build_main_page_layout():
-    # Initialiser la session utilisateur
-    init_user_session()
-    
-    token_display = "Aucune connexion active. Cliquez sur 'Se connecter' en haut à droite."
-    if is_user_authenticated():
-        token = get_user_strava_token()
-        token_display = f"Connecté ✓ ...{token[-6:]}" if token and len(token) > 6 else "Connecté ✓"
-
     return html.Div(style={'fontFamily': 'Inter, sans-serif', 'padding': '0', 'margin': '0', 'height': '100vh', 'display': 'flex', 'flexDirection': 'column'}, children=[
         html.Div(style={'backgroundColor': '#1a202c', 'color': 'white', 'padding': '1rem', 'textAlign': 'center', 'flexShrink': '0', 'position': 'relative'}, children=[
-            # Logo Strava avec statut et bouton de connexion
-            create_strava_status_component(),
-            
             html.H1("💨 KOM Hunters V2", style={'margin': '0 0 10px 0', 'fontSize': '2rem'}),
             html.H2("Trouvez les segments avec vent favorable", style={'margin': '0 0 1rem 0', 'fontSize': '1.1rem', 'color': '#a0aec0', 'fontWeight': '400'}),
-            
-            html.Div(id='token-status-message', children=f"Statut Strava : {token_display}", style={'color': '#A0AEC0', 'marginBottom': '5px', 'fontSize':'0.8em'}),
-            html.Div(id='new-token-info-display', children=get_user_session_info(), style={'color': '#A0AEC0', 'fontSize':'0.8em', 'whiteSpace': 'pre-line'}),
+            html.P("🌍 Aucune connexion requise • Accès aux segments publics • Recherche basée sur les conditions météo actuelles", 
+                   style={'margin': '0 0 1.5rem 0', 'fontSize': '0.9rem', 'color': '#68d391', 'fontStyle': 'italic', 'maxWidth': '600px', 'marginLeft': 'auto', 'marginRight': 'auto'}),
             
             html.Div(style={'display': 'flex', 'flexDirection': 'column', 'alignItems': 'center', 'gap': '5px', 'marginTop': '10px'}, children=[ 
                 html.Div(style={'position': 'relative', 'width': '400px'}, children=[
                     dcc.Input(
-                        id='address-input', type='text', placeholder='Commencez à taper une ville ou une adresse...',
+                        id='address-input', type='text', placeholder='Tapez une ville ou une adresse (ex: Paris, Lyon, Annecy)...',
                         debounce=False,
                         style={'padding': '10px', 'fontSize': '1rem', 'borderRadius': '5px', 'border': '1px solid #4A5568', 'width': '100%', 'backgroundColor': '#2D3748', 'color': '#E2E8F0', 'boxSizing': 'border-box'}
                     ),
@@ -652,6 +405,11 @@ def build_main_page_layout():
                             style={'padding': '10px 15px', 'fontSize': '1rem', 'backgroundColor': '#3182CE', 'color': 'white', 'border': 'none', 'borderRadius': '5px', 'cursor': 'pointer', 'marginTop': '60px'})
             ]),
             html.Div(id='search-status-message', style={'marginTop': '10px', 'minHeight': '20px', 'color': '#A0AEC0'})
+        ]),
+        
+        html.Div(style={'backgroundColor': '#e6fffa', 'color': '#234e52', 'padding': '1rem', 'borderLeft': '4px solid #38b2ac', 'margin': '1rem auto', 'maxWidth': '600px', 'textAlign': 'center'}, children=[
+            html.P("ℹ️ Cette application utilise les données publiques de Strava et les conditions météorologiques actuelles pour identifier les segments où le vent vous aidera !", 
+                   style={'margin': '0', 'fontSize': '0.9rem'})
         ]),
         
         dcc.Loading(
@@ -669,129 +427,13 @@ app.layout = html.Div([
 
 print("✅ Layout défini")
 
-# === CALLBACK POUR LA DÉCONNEXION ===
-@app.callback(
-    Output('url', 'pathname', allow_duplicate=True),
-    Input('logout-button', 'n_clicks'),
-    prevent_initial_call=True
-)
-def logout_user(n_clicks):
-    """Déconnecte l'utilisateur et efface sa session"""
-    if n_clicks > 0:
-        print(f"🚪 Déconnexion demandée pour session: {session.get('session_id', 'unknown')}")
-        clear_user_strava_session()
-        return '/'
-    return dash.no_update
-
-# --- Callback de Navigation et d'Authentification ---
+# --- Callback de Navigation ---
 @app.callback(
     Output('page-content', 'children'),
-    Input('url', 'pathname'),
-    Input('url', 'search')
+    Input('url', 'pathname')
 )
-def display_page_content(pathname, search_query_params):
-    
-    if pathname == '/strava_callback' and search_query_params:
-        print(f"🔄 Traitement OAuth - search_query_params = {search_query_params}")
-        
-        try:
-            params = {}
-            if search_query_params.startswith('?'):
-                query_string = search_query_params[1:]
-            else:
-                query_string = search_query_params
-                
-            for param_pair in query_string.split('&'):
-                if '=' in param_pair:
-                    key, value = param_pair.split('=', 1)
-                    params[key] = value
-            
-            print(f"📊 Paramètres analysés: {params}")
-            
-            auth_code = params.get('code')
-            state = params.get('state')
-            error = params.get('error')
-
-            # Vérification CSRF
-            if 'oauth_state' not in session or session['oauth_state'] != state:
-                print("❌ SÉCURITÉ: État OAuth invalide - possible attaque CSRF")
-                session.clear()
-                return html.Div([
-                    html.H2("🚨 Erreur de sécurité", style={'color': 'red', 'textAlign': 'center'}),
-                    html.P("Tentative d'authentification suspecte détectée. La session a été effacée par sécurité."),
-                    html.A("Retour à l'accueil", href="/", style={'color': 'blue'})
-                ])
-
-            if error:
-                error_msg = f"❌ Erreur d'autorisation Strava: {error}"
-                print(error_msg)
-                return build_main_page_layout()
-            elif auth_code:
-                print(f"🔑 Code d'autorisation Strava reçu: {auth_code[:20]}...")
-                if STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET:
-                    token_url = 'https://www.strava.com/oauth/token'
-                    
-                    payload = {
-                        'client_id': STRAVA_CLIENT_ID,
-                        'client_secret': STRAVA_CLIENT_SECRET,
-                        'code': auth_code,
-                        'grant_type': 'authorization_code'
-                    }
-                    
-                    print(f"📤 Payload envoyé à Strava")
-                    
-                    try:
-                        response = requests.post(token_url, data=payload, timeout=15)
-                        print(f"📨 Réponse Strava - Status: {response.status_code}")
-                        
-                        response.raise_for_status()
-                        token_data = response.json()
-                        
-                        access_token = token_data.get('access_token')
-                        refresh_token = token_data.get('refresh_token') 
-                        expires_at = token_data.get('expires_at')
-                        
-                        if access_token:
-                            # Stocker les tokens dans la session utilisateur
-                            set_user_strava_token(access_token, refresh_token, expires_at)
-                            
-                            print(f"✅ Nouveaux tokens Strava stockés pour session: {session['session_id']}")
-                        else:
-                            print("❌ Aucun token d'accès reçu")
-                        
-                    except requests.exceptions.RequestException as e:
-                        print(f"❌ Erreur lors de l'échange du code OAuth: {e}")
-                        if hasattr(e, 'response') and e.response is not None:
-                            print(f"📨 Erreur détaillée: {e.response.text}")
-                else:
-                    print("❌ Configuration Strava manquante")
-            else:
-                print("❌ Aucun code d'autorisation reçu")
-                
-        except Exception as e:
-            print(f"❌ Erreur lors du traitement OAuth: {e}")
-        
-        return build_main_page_layout()
-    
-    elif pathname == '/strava_callback':
-        return html.Div([
-            html.H2("⏳ Traitement de l'autorisation Strava..."),
-            html.P("Vous allez être redirigé(e) sous peu.", id="callback-message"),
-            dcc.Interval(id='redirect-interval', interval=2000, n_intervals=0, max_intervals=1),
-            dcc.Location(id='redirect-location', refresh=True)
-        ])
-    
+def display_page_content(pathname):
     return build_main_page_layout()
-
-@app.callback(
-    Output('redirect-location', 'pathname'),
-    Input('redirect-interval', 'n_intervals'),
-    prevent_initial_call=True
-)
-def redirect_to_main(n_intervals):
-    if n_intervals >= 1:
-        return '/'
-    return dash.no_update
 
 # === CALLBACKS POUR LES SUGGESTIONS D'ADRESSES ===
 @app.callback(
@@ -903,11 +545,8 @@ def select_suggestion(n_clicks_list, original_address_input):
     prevent_initial_call=True 
 )
 def search_and_display_segments(n_clicks, address_input_value, selected_suggestion_data):
-    current_strava_access_token = get_user_strava_token()
-    
-    print(f"\n=== 🔍 DEBUT RECHERCHE DE SEGMENTS V2 ===")
-    print(f"Session: {session.get('session_id', 'unknown')[:8]}...")
-    print(f"Token disponible: {'✅' if current_strava_access_token else '❌'}")
+    print(f"\n=== 🔍 DEBUT RECHERCHE DE SEGMENTS V2 PUBLIQUE ===")
+    print(f"IP Client: {get_client_ip()}")
     print(f"STRAVA_ANALYZER_AVAILABLE: {'✅' if STRAVA_ANALYZER_AVAILABLE else '❌'}")
     
     search_lat, search_lon = None, None
@@ -949,23 +588,27 @@ def search_and_display_segments(n_clicks, address_input_value, selected_suggesti
             html.H3("❌ Coordonnées invalides", style={'textAlign': 'center', 'color': 'red', 'padding': '20px'})
         ]), "Impossible de déterminer les coordonnées pour la recherche.", None
 
+    # Récupérer le token d'application Strava
+    app_token = get_app_strava_token()
+    
     print(f"\n🔍 Vérification des accès:")
-    print(f"Token Strava: {'✅ Présent' if current_strava_access_token else '❌ MANQUANT'}")
+    print(f"Token d'application Strava: {'✅ Présent' if app_token else '❌ MANQUANT'}")
     print(f"Clé météo: {'✅ Présente' if WEATHER_API_KEY else '❌ MANQUANTE'}")
     print(f"Analyzer disponible: {'✅ OUI' if STRAVA_ANALYZER_AVAILABLE else '❌ NON'}")
     
-    if not current_strava_access_token: 
-        print("⛔ Arrêt: Token Strava manquant")
+    if not app_token: 
+        print("⛔ Arrêt: Token d'application Strava manquant")
         return html.Div([
-            html.H3("🔒 Token Strava manquant", style={'textAlign': 'center', 'color': 'orange', 'padding': '20px'}),
-            html.P("Veuillez vous connecter via le bouton en haut à droite", style={'textAlign': 'center'}),
-            html.P("💡 Seule la lecture publique des segments est nécessaire", style={'textAlign': 'center', 'fontSize': '0.9em', 'color': '#666'})
-        ]), "Erreur: Token Strava non disponible. Veuillez vous connecter via le bouton.", None
+            html.H3("🔒 Impossible d'accéder à Strava", style={'textAlign': 'center', 'color': 'red', 'padding': '20px'}),
+            html.P("Problème de configuration du serveur. Contactez l'administrateur.", style={'textAlign': 'center'}),
+            html.P("💡 L'application nécessite des credentials Strava valides pour accéder aux segments publics", style={'textAlign': 'center', 'fontSize': '0.9em', 'color': '#666'})
+        ]), "Erreur: Impossible d'obtenir un token d'accès Strava.", None
         
     if not WEATHER_API_KEY:
         print("⛔ Arrêt: Clé météo manquante")
         return html.Div([
-            html.H3("⚙️ Configuration manquante", style={'textAlign': 'center', 'color': 'red', 'padding': '20px'})
+            html.H3("⚙️ Configuration manquante", style={'textAlign': 'center', 'color': 'red', 'padding': '20px'}),
+            html.P("Clé API météorologique manquante.", style={'textAlign': 'center'})
         ]), "Erreur de configuration serveur: Clé API Météo manquante.", None
     
     if not STRAVA_ANALYZER_AVAILABLE:
@@ -980,15 +623,12 @@ def search_and_display_segments(n_clicks, address_input_value, selected_suggesti
         print(f"\n🚀 Lancement de la recherche de segments avec vent favorable...")
         found_segments, segments_error_msg = strava_analyzer.find_tailwind_segments_live( 
             search_lat, search_lon, SEARCH_RADIUS_KM, 
-            current_strava_access_token, WEATHER_API_KEY, 
+            app_token, WEATHER_API_KEY, 
             MIN_TAILWIND_EFFECT_MPS_SEARCH
         )
         
         if segments_error_msg:
             print(f"❌ Erreur lors de la recherche: {segments_error_msg}")
-            # Si c'est une erreur d'authentification, effacer la session
-            if "401" in str(segments_error_msg) or "Authorization" in str(segments_error_msg):
-                clear_user_strava_session()
             return html.Div([
                 html.H3("❌ Erreur de recherche", style={'textAlign': 'center', 'color': 'red', 'padding': '20px'}),
                 html.P(f"{segments_error_msg}", style={'textAlign': 'center'})
@@ -1010,7 +650,12 @@ def search_and_display_segments(n_clicks, address_input_value, selected_suggesti
 
         status_msg = ""
         if not found_segments:
-            status_msg = f"😔 Aucun segment avec vent favorable trouvé autour de '{display_address}'. Essayez une autre zone ou revenez plus tard quand les conditions de vent seront différentes."
+            status_msg = html.Div([
+                html.P(f"😔 Aucun segment avec vent favorable trouvé autour de '{display_address}'.", 
+                       style={'margin': '0', 'fontWeight': 'bold', 'color': '#D69E2E'}),
+                html.P("💡 Essayez une autre zone ou revenez plus tard quand les conditions de vent seront différentes.", 
+                       style={'margin': '5px 0 0 0', 'fontSize': '0.9em', 'fontStyle': 'italic', 'color': '#6B7280'})
+            ])
             print("😔 Aucun segment avec vent favorable")
             
             fig.add_trace(go.Scattermapbox(
@@ -1117,7 +762,7 @@ def search_and_display_segments(n_clicks, address_input_value, selected_suggesti
             uirevision=f'map_results_{search_lat}_{search_lon}'
         )
         
-        print(f"=== 🏁 FIN RECHERCHE DE SEGMENTS V2 ===\n")
+        print(f"=== 🏁 FIN RECHERCHE DE SEGMENTS V2 PUBLIQUE ===\n")
         
         map_component = dcc.Graph(
             id='segments-map',
@@ -1183,7 +828,7 @@ def handle_segment_click(click_data):
                             'border': '2px solid #FC4C02'
                         }
                     ),
-                    html.P(f"🔒 Session: {session.get('session_id', 'unknown')[:6]}... - Données publiques uniquement", 
+                    html.P(f"🌍 Accès libre aux segments publics - Aucune connexion requise", 
                            style={'fontSize': '0.75em', 'color': '#6B7280', 'margin': '8px 0 0 0', 'fontStyle': 'italic'})
                 ], style={'textAlign': 'center', 'padding': '10px'})
         
@@ -1199,20 +844,38 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8050))
     debug_mode = os.environ.get('RENDER') is None
     
-    required_keys = [MAPBOX_ACCESS_TOKEN, STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET, WEATHER_API_KEY]
-    if not all(required_keys):
-        print("❌ ERREUR CRITIQUE: Une ou plusieurs clés/ID API sont manquants.")
+    # Configuration URL dynamique pour render.com ou développement local
+    if os.getenv('RENDER'):
+        BASE_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'kom-hunters-v2.onrender.com')}"
+    else:
+        BASE_URL = 'http://localhost:8050'
     
-    if not SECRET_KEY:
-        print("⚠️ ATTENTION: Définissez SECRET_KEY dans vos variables d'environnement pour la production.")
+    required_keys = [MAPBOX_ACCESS_TOKEN, STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET, WEATHER_API_KEY, SECRET_KEY]
+    missing_keys = []
+    if not MAPBOX_ACCESS_TOKEN: missing_keys.append("MAPBOX_ACCESS_TOKEN")
+    if not STRAVA_CLIENT_ID: missing_keys.append("STRAVA_CLIENT_ID") 
+    if not STRAVA_CLIENT_SECRET: missing_keys.append("STRAVA_CLIENT_SECRET")
+    if not WEATHER_API_KEY: missing_keys.append("OPENWEATHERMAP_API_KEY")
+    if not SECRET_KEY: missing_keys.append("SECRET_KEY")
     
-    print(f"\n🚀 LANCEMENT KOM HUNTERS V2 SIMPLIFIÉ")
+    if missing_keys:
+        print(f"❌ ERREUR CRITIQUE: Variables d'environnement manquantes: {', '.join(missing_keys)}")
+        print("⚠️ L'application ne fonctionnera pas correctement sans ces clés.")
+    
+    # Test du token d'application au démarrage
+    startup_token = get_app_strava_token()
+    if startup_token:
+        print(f"✅ Token d'application Strava testé avec succès au démarrage")
+    else:
+        print(f"❌ ATTENTION: Impossible d'obtenir un token d'application Strava au démarrage")
+        print(f"   Vérifiez vos STRAVA_CLIENT_ID et STRAVA_CLIENT_SECRET")
+    
+    print(f"\n🚀 LANCEMENT KOM HUNTERS V2 PUBLIQUE")
     print(f"🌐 Mode: {'Développement' if debug_mode else 'Production'}")
     print(f"🔗 URL: {BASE_URL}")
-    print(f"🔒 Sessions sécurisées: ✅")
-    print(f"🛡️ Protection CSRF: ✅")
-    print(f"🔐 Scope Strava: READ ONLY (données publiques)")
+    print(f"🔓 AUCUNE AUTHENTIFICATION UTILISATEUR REQUISE")
+    print(f"🌍 Accès aux segments publics uniquement")
     print(f"📊 Fonctionnalité: Recherche de segments avec vent favorable")
-    print(f"🔧 Configuration Strava callback: {STRAVA_REDIRECT_URI}")
+    print(f"💨 Utilise les conditions météorologiques en temps réel")
     
     app.run_server(debug=debug_mode, host='0.0.0.0', port=port)
