@@ -10,3 +10,4 @@ langchain-core==0.3.61
 langchain-community==0.3.18
 openai>=1.68.2,<2.0.0
 gunicorn==21.2.0
+flask>=2.3.0
