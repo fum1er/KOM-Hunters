@@ -4,6 +4,6 @@ requests==2.31.0
 python-dotenv==1.0.0
 polyline==2.0.0
 geopy==2.4.0
-langchain-openai==0.1.25
-langchain-core==0.2.38
+langchain-openai==0.3.18
+langchain-core==0.3.61
 gunicorn==21.2.0
